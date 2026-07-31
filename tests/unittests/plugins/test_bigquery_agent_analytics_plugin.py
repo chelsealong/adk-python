@@ -8537,6 +8537,56 @@ class TestC6AgentStateCheckpoint:
     assert adk["source_event_id"] == event.id
 
 
+class TestNodeOutputLogging:
+  """FunctionNode (and other output-only node) events surface a NODE_OUTPUT row."""
+
+  @pytest.mark.asyncio
+  async def test_function_node_output_logged(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    event = event_lib.Event(
+        author="step_one",
+        output={"result": 42},
+        node_path="repro_wf@1/step_one@1",
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.01)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    node_rows = [r for r in rows if r["event_type"] == "NODE_OUTPUT"]
+    assert len(node_rows) == 1
+    content = json.loads(node_rows[0]["content"])
+    assert content["output"] == {"result": 42}
+    adk = json.loads(node_rows[0]["attributes"])["adk"]
+    assert adk["node"]["path"] == "repro_wf@1/step_one@1"
+
+  @pytest.mark.asyncio
+  async def test_event_without_output_does_not_log_node_output(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      dummy_arrow_schema,
+  ):
+    event = event_lib.Event(
+        author="agent",
+        actions=event_actions_lib.EventActions(state_delta={"k": "v"}),
+    )
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+    await bq_plugin_inst.on_event_callback(
+        invocation_context=invocation_context, event=event
+    )
+    await asyncio.sleep(0.01)
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    assert not [r for r in rows if r["event_type"] == "NODE_OUTPUT"]
+
+
 class TestC7ToolPauseAndComplete:
 
   @pytest.mark.asyncio
@@ -8708,6 +8758,7 @@ class TestViewDefsRegistration:
         "EVENT_COMPACTION",
         "AGENT_STATE_CHECKPOINT",
         "TOOL_PAUSED",
+        "NODE_OUTPUT",
     ):
       assert event_type in defs, f"{event_type} missing from _EVENT_VIEW_DEFS"
       assert isinstance(defs[event_type], list)

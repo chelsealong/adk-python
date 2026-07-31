@@ -2200,6 +2200,10 @@ _EVENT_VIEW_DEFS: dict[str, list[str]] = {
         "JSON_VALUE(attributes, '$.adk.pause_kind') AS pause_kind",
         "JSON_VALUE(attributes, '$.adk.function_call_id') AS function_call_id",
     ],
+    "NODE_OUTPUT": [
+        "JSON_QUERY(content, '$.output') AS node_output",
+        "JSON_VALUE(attributes, '$.adk.node.path') AS node_path",
+    ],
 }
 
 _VIEW_SQL_TEMPLATE = """\
@@ -3703,6 +3707,28 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
               "end_of_agent": bool(event.actions.end_of_agent),
           },
           is_truncated=agent_state_truncated,
+          event_data=EventData(source_event=event),
+      )
+
+    # --- NODE_OUTPUT ---
+    # Workflow nodes that return a plain value (e.g. FunctionNode) carry
+    # it in Event.output rather than Event.content, so the AGENT_RESPONSE
+    # branch below (which only reads event.content) never sees them.
+    # Without this, such nodes produce no identifying row at all — the
+    # node_info.path stamped into attributes.adk.node by
+    # _build_adk_envelope is otherwise unused.
+    # Use getattr so the existing Mock-based HITL test fixtures (built
+    # without an `output` attribute) still work.
+    node_output = getattr(event, "output", None)
+    if node_output is not None:
+      output_dict, output_truncated = _recursive_smart_truncate(
+          node_output, self.config.max_content_length
+      )
+      await self._log_event(
+          "NODE_OUTPUT",
+          callback_ctx,
+          raw_content={"output": output_dict},
+          is_truncated=output_truncated,
           event_data=EventData(source_event=event),
       )
 
