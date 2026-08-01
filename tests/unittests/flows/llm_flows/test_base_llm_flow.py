@@ -1329,6 +1329,88 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 
 
 @pytest.mark.asyncio
+async def test_run_live_transfers_when_transfer_response_is_not_first_part():
+  """Test that run_live transfers even if transfer_to_agent is not parts[0].
+
+  Regression test for https://github.com/google/adk-python/issues/6541:
+  when the model issues parallel function calls, the merged event may place
+  the transfer_to_agent function response after another tool's response, and
+  the transfer must still happen.
+  """
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  # transfer_to_agent is the second part, not parts[0].
+  content = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(name='set_state')
+          ),
+          types.Part(
+              function_response=types.FunctionResponse(name='transfer_to_agent')
+          ),
+      ]
+  )
+  transfer_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  transfer_event.content = content
+  transfer_event.actions = mock.Mock()
+  transfer_event.actions.transfer_to_agent = 'sub_agent'
+
+  class StopTest(Exception):
+    pass
+
+  receive_call_count = 0
+
+  async def mock_receive_from_model(*args, **kwargs):
+    nonlocal receive_call_count
+    receive_call_count += 1
+    if receive_call_count == 1:
+      yield transfer_event
+    else:
+      raise StopTest()
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  mock_sub_agent = mock.Mock()
+
+  async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
+    for item in []:
+      yield item
+
+  mock_sub_agent.run_live = mock.Mock(side_effect=mock_run_live_sub_agent)
+
+  flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
+  flow._send_to_model = mock.AsyncMock()
+
+  with mock.patch(
+      'google.adk.models.google_llm.Gemini.connect'
+  ) as mock_connect:
+    mock_connection = mock.AsyncMock()
+    mock_connect.return_value.__aenter__.return_value = mock_connection
+
+    try:
+      async for _ in flow.run_live(invocation_context):
+        pass
+    except StopTest:
+      pass
+
+  flow._get_agent_to_run.assert_called_once_with(
+      invocation_context, 'sub_agent'
+  )
+  mock_sub_agent.run_live.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_postprocess_live_yields_grounding_metadata_only():
   """Test that _postprocess_live yields LlmResponse with only grounding_metadata."""
   agent = Agent(name='test_agent')
