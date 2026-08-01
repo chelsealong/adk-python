@@ -1332,9 +1332,9 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 async def test_run_live_transfers_when_transfer_part_is_not_first():
   """Test that run_live transfers even if transfer_to_agent isn't parts[0].
 
-  Regression test for https://github.com/google/adk-python/issues/6541:
-  when parallel function-call responses are merged, the transfer_to_agent
-  response may land anywhere in event.content.parts, not just parts[0].
+  When parallel function-call responses are merged into one event, the
+  transfer_to_agent response may land anywhere in event.content.parts, not
+  just parts[0].
   """
 
   agent = Agent(name='test_agent')
@@ -1408,6 +1408,83 @@ async def test_run_live_transfers_when_transfer_part_is_not_first():
       pass
 
   assert sub_agent_run_live_called
+
+
+@pytest.mark.asyncio
+async def test_run_live_does_not_transfer_without_transfer_response():
+  """Test that run_live does not transfer when no part names transfer_to_agent.
+
+  Guards against a false positive from checking event.actions.transfer_to_agent
+  alone: transfer must only fire when a function response actually named
+  transfer_to_agent is present in the merged event.
+  """
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  content = types.Content(
+      parts=[
+          types.Part(
+              function_response=types.FunctionResponse(name='set_state')
+          ),
+      ]
+  )
+  non_transfer_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  non_transfer_event.content = content
+  non_transfer_event.actions = mock.Mock()
+  non_transfer_event.actions.transfer_to_agent = 'sub_agent'
+
+  class StopTest(Exception):
+    pass
+
+  receive_call_count = 0
+
+  async def mock_receive_from_model(*args, **kwargs):
+    nonlocal receive_call_count
+    receive_call_count += 1
+    if receive_call_count == 1:
+      yield non_transfer_event
+    else:
+      raise StopTest()
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  mock_sub_agent = mock.Mock()
+  sub_agent_run_live_called = False
+
+  async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
+    nonlocal sub_agent_run_live_called
+    sub_agent_run_live_called = True
+    for item in []:
+      yield item
+
+  mock_sub_agent.run_live = mock.Mock(side_effect=mock_run_live_sub_agent)
+
+  flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
+  flow._send_to_model = mock.AsyncMock()
+
+  with mock.patch(
+      'google.adk.models.google_llm.Gemini.connect'
+  ) as mock_connect:
+    mock_connection = mock.AsyncMock()
+    mock_connect.return_value.__aenter__.return_value = mock_connection
+
+    try:
+      async for _ in flow.run_live(invocation_context):
+        pass
+    except StopTest:
+      pass
+
+  assert not sub_agent_run_live_called
 
 
 @pytest.mark.asyncio
