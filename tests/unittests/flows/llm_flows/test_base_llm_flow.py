@@ -1329,6 +1329,85 @@ async def test_run_live_clears_resumption_handle_on_transfer():
 
 
 @pytest.mark.asyncio
+async def test_run_live_transfers_when_not_first_function_response():
+  """Test that run_live transfers even if transfer_to_agent isn't parts[0]."""
+
+  agent = Agent(name='test_agent')
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+  invocation_context.live_request_queue = LiveRequestQueue()
+
+  flow = BaseLlmFlowForTesting()
+
+  # Merged parallel function-call response where transfer_to_agent is NOT
+  # the first part, e.g. [set_state, transfer_to_agent].
+  other_part = types.Part(
+      function_response=types.FunctionResponse(name='set_state')
+  )
+  transfer_part = types.Part(
+      function_response=types.FunctionResponse(name='transfer_to_agent')
+  )
+  content = types.Content(parts=[other_part, transfer_part])
+  transfer_event = Event(
+      id=Event.new_id(),
+      invocation_id=invocation_context.invocation_id,
+      author=agent.name,
+  )
+  transfer_event.content = content
+  transfer_event.actions = mock.Mock()
+  transfer_event.actions.transfer_to_agent = 'sub_agent'
+
+  class StopTest(Exception):
+    pass
+
+  receive_call_count = 0
+
+  async def mock_receive_from_model(*args, **kwargs):
+    nonlocal receive_call_count
+    receive_call_count += 1
+    if receive_call_count == 1:
+      yield transfer_event
+    else:
+      raise StopTest()
+
+  flow._receive_from_model = mock.Mock(side_effect=mock_receive_from_model)
+
+  # Mock _get_agent_to_run to return a mock agent and record whether the
+  # sub-agent was actually started.
+  sub_agent_started = False
+  mock_sub_agent = mock.Mock()
+  mock_sub_agent.run_live = mock.Mock()
+
+  async def mock_run_live_sub_agent(child_ctx, *args, **kwargs):
+    nonlocal sub_agent_started
+    sub_agent_started = True
+    for item in []:
+      yield item
+
+  mock_sub_agent.run_live.side_effect = mock_run_live_sub_agent
+
+  flow._get_agent_to_run = mock.Mock(return_value=mock_sub_agent)
+
+  # Mock _send_to_model to prevent it from running indefinitely
+  flow._send_to_model = mock.AsyncMock()
+
+  with mock.patch(
+      'google.adk.models.google_llm.Gemini.connect'
+  ) as mock_connect:
+    mock_connection = mock.AsyncMock()
+    mock_connect.return_value.__aenter__.return_value = mock_connection
+
+    try:
+      async for _ in flow.run_live(invocation_context):
+        pass
+    except StopTest:
+      pass
+
+  assert sub_agent_started
+
+
+@pytest.mark.asyncio
 async def test_postprocess_live_yields_grounding_metadata_only():
   """Test that _postprocess_live yields LlmResponse with only grounding_metadata."""
   agent = Agent(name='test_agent')
