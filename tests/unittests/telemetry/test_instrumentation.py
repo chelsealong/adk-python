@@ -14,12 +14,17 @@
 
 # pylint: disable=protected-access
 
+import asyncio
+import contextvars
+import logging
 import time
 from unittest import mock
 
 from google.adk.telemetry import _instrumentation
 from google.adk.telemetry import _metrics
+from google.adk.telemetry import tracing
 from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 import pytest
 
 
@@ -106,3 +111,42 @@ async def test_record_tool_execution_forwards_detected_error_type():
   mock_record.assert_called_once()
   assert mock_record.call_args.kwargs["error"] is None
   assert mock_record.call_args.kwargs["error_type"] == "MCP_TOOL_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_record_invocation_no_error_on_early_close(monkeypatch, caplog):
+  """Early-stop consumers must not trigger an OTel 'Failed to detach' ERROR.
+
+  Regression test for https://github.com/google/adk-python/issues/6559: when
+  a caller stops iterating the invocation's async generator early, the
+  generator is finalized (GeneratorExit) later, in a different execution
+  context than the one where `record_invocation`'s span context was
+  attached. Detaching that token from the wrong context raises "Token was
+  created in a different Context" -- OTel's `context.detach()` swallows the
+  exception but logs it at ERROR via the `opentelemetry.context` logger.
+  """
+  real_tracer = TracerProvider().get_tracer(__name__)
+  monkeypatch.setattr(
+      tracing.tracer, "start_as_current_span", real_tracer.start_as_current_span
+  )
+  monkeypatch.setattr(tracing.tracer, "start_span", real_tracer.start_span)
+
+  async def _agen():
+    with _instrumentation.record_invocation(None, "conversation-id"):
+      yield 1
+      yield 2
+
+  gen = _agen()
+  await gen.__anext__()  # Resume (and attach the span context) in this task.
+
+  # Simulate the generator being finalized later from a *different*
+  # execution context than the one it was resumed in -- e.g. via garbage
+  # collection or `loop.shutdown_asyncgens()` after the caller returns early,
+  # which is what actually happens in the reported scenario.
+  fresh_context = contextvars.Context()
+  close_task = fresh_context.run(asyncio.ensure_future, gen.aclose())
+
+  with caplog.at_level(logging.ERROR, logger="opentelemetry.context"):
+    await close_task
+
+  assert "Failed to detach context" not in caplog.text

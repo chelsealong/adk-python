@@ -68,8 +68,32 @@ def record_invocation(
     Nothing; the span (if any) is active for the duration of the block.
   """
   if resolve_schema_version() < SCHEMA_VERSION_SEMCONV_ALIGNED:
-    with tracing.tracer.start_as_current_span("invocation"):
+    # NOTE: this context manager wraps an async generator (runners.
+    # _run_node_async). If the caller stops iterating early, the generator is
+    # finalized (GeneratorExit / CancelledError) in a different execution
+    # context than the one where the span was attached, so an automatic
+    # detach() would raise "Token was created in a different Context" (OTel
+    # swallows it but logs an ERROR). Detach only on normal completion; always
+    # end the span.
+    span = tracing.tracer.start_span("invocation")
+    token = context_api.attach(trace.set_span_in_context(span))
+    completed = False
+    try:
       yield
+      completed = True
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+      # Mirrors start_as_current_span's default error recording (it only
+      # catches Exception, not GeneratorExit/BaseException) so the span's
+      # error status is unaffected by the detach change below.
+      span.record_exception(exc)
+      span.set_status(
+          trace.Status(trace.StatusCode.ERROR, f"{type(exc).__name__}: {exc}")
+      )
+      raise
+    finally:
+      if completed:
+        context_api.detach(token)
+      span.end()
     return
 
   from . import node_tracing
