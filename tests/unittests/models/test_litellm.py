@@ -5180,6 +5180,11 @@ async def test_finish_reason_unknown_maps_to_other(
         ("custom-model", ""),
         ("", ""),
         (None, ""),
+        # litellm_proxy is a passthrough; the real provider is nested inside.
+        ("litellm_proxy/azure/my-deployment", "azure"),
+        ("litellm_proxy/openai/gpt-4o", "openai"),
+        ("litellm_proxy/gpt-4o", "openai"),
+        ("litellm_proxy/custom-model", ""),
     ],
 )
 def test_get_provider_from_model(model_string, expected_provider):
@@ -5306,6 +5311,97 @@ async def test_get_completion_inputs_openai_file_upload(mocker):
   assert content[1]["file"]["format"] == "application/pdf"
 
   mock_acreate_file.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_litellm_proxy_azure_file_upload(mocker):
+  """Test that a litellm_proxy-routed Azure model uploads via file_id.
+
+  Regression test: models routed through a LiteLLM Proxy using nested
+  identifiers (e.g. "litellm_proxy/azure/<deployment>") must still be
+  recognized as Azure so PDFs are uploaded with a file_id instead of an
+  inline file_data URI, which Azure rejects.
+  """
+  mock_file_response = mocker.create_autospec(litellm.FileObject)
+  mock_file_response.id = "file-proxied123"
+  mock_acreate_file = AsyncMock(return_value=mock_file_response)
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  pdf_part = types.Part.from_bytes(
+      data=b"test_pdf_content", mime_type="application/pdf"
+  )
+  model = "litellm_proxy/azure/my-deployment"
+  llm_request = LlmRequest(
+      model=model,
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Analyze this PDF"),
+                  pdf_part,
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(tools=[]),
+  )
+
+  messages, tools, response_format, generation_params, _ = (
+      await _get_completion_inputs(llm_request, model=model)
+  )
+
+  content = messages[0]["content"]
+  assert content[1]["type"] == "file"
+  assert content[1]["file"]["file_id"] == "file-proxied123"
+  assert "file_data" not in content[1]["file"]
+
+  mock_acreate_file.assert_called_once_with(
+      file=b"test_pdf_content",
+      purpose="assistants",
+      custom_llm_provider="azure",
+  )
+
+
+@pytest.mark.asyncio
+async def test_get_completion_inputs_litellm_proxy_anthropic_no_file_upload(
+    mocker,
+):
+  """Test that a litellm_proxy-routed non-file-id provider is unaffected.
+
+  The recursive unwrap of "litellm_proxy" should only trigger the file_id
+  upload path for providers that actually require it (openai, azure); a
+  proxied Anthropic model must keep using inline file_data.
+  """
+  mock_acreate_file = AsyncMock()
+  mocker.patch.object(litellm, "acreate_file", new=mock_acreate_file)
+
+  pdf_part = types.Part.from_bytes(
+      data=b"test_pdf_content", mime_type="application/pdf"
+  )
+  model = "litellm_proxy/anthropic/claude-3-opus"
+  llm_request = LlmRequest(
+      model=model,
+      contents=[
+          types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="Analyze this PDF"),
+                  pdf_part,
+              ],
+          )
+      ],
+      config=types.GenerateContentConfig(tools=[]),
+  )
+
+  messages, tools, response_format, generation_params, _ = (
+      await _get_completion_inputs(llm_request, model=model)
+  )
+
+  content = messages[0]["content"]
+  assert content[1]["type"] == "file"
+  assert "file_data" in content[1]["file"]
+  assert "file_id" not in content[1]["file"]
+
+  mock_acreate_file.assert_not_called()
 
 
 @pytest.mark.asyncio

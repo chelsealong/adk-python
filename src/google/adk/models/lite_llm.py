@@ -304,11 +304,18 @@ def _map_finish_reason(
   return _FINISH_REASON_MAPPING.get(finish_reason_str, types.FinishReason.OTHER)
 
 
+# Prefixes that route through LiteLLM without being a real backend
+# themselves; the actual provider is embedded in the remainder of the model
+# string (e.g. "litellm_proxy/azure/my-deployment" is served by Azure).
+_PASSTHROUGH_PROVIDER_PREFIXES = frozenset({"litellm_proxy"})
+
+
 def _get_provider_from_model(model: str) -> str:
   """Extracts the provider name from a LiteLLM model string.
 
   Args:
-    model: The model string (e.g., "openai/gpt-4o", "azure/gpt-4").
+    model: The model string (e.g., "openai/gpt-4o", "azure/gpt-4",
+      "litellm_proxy/azure/gpt-4").
 
   Returns:
     The provider name or empty string if not determinable.
@@ -317,8 +324,11 @@ def _get_provider_from_model(model: str) -> str:
     return ""
   # LiteLLM uses "provider/model" format
   if "/" in model:
-    provider, _ = model.split("/", 1)
-    return provider.lower()
+    provider, remainder = model.split("/", 1)
+    provider = provider.lower()
+    if provider in _PASSTHROUGH_PROVIDER_PREFIXES:
+      return _get_provider_from_model(remainder)
+    return provider
   # Fallback heuristics for common patterns
   model_lower = model.lower()
   if "azure" in model_lower:
