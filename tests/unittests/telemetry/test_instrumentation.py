@@ -23,6 +23,7 @@ from unittest import mock
 from google.adk.telemetry import _instrumentation
 from google.adk.telemetry import _metrics
 from google.adk.telemetry import tracing
+from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 import pytest
@@ -150,3 +151,34 @@ async def test_record_invocation_no_error_on_early_close(monkeypatch, caplog):
     await close_task
 
   assert "Failed to detach context" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_record_invocation_detaches_context_on_same_context_exception(
+    monkeypatch,
+):
+  """An ordinary exception raised in the same context must still detach.
+
+  Regression test: unlike the early-close case above (where the generator is
+  abandoned and finalized in a *different* context), an exception raised
+  synchronously inside the `with record_invocation(...):` block propagates
+  in the *same* context it was attached in, so the span's context token must
+  still be detached -- otherwise the span leaks onto the ambient context and
+  corrupts parent/child relationships for every later span created in this
+  execution context (e.g. a reused asyncio task or thread-pool thread).
+  """
+  real_tracer = TracerProvider().get_tracer(__name__)
+  monkeypatch.setattr(
+      tracing.tracer, "start_as_current_span", real_tracer.start_as_current_span
+  )
+  monkeypatch.setattr(tracing.tracer, "start_span", real_tracer.start_span)
+
+  before = dict(context_api.get_current())
+
+  with pytest.raises(ValueError):
+    with _instrumentation.record_invocation(None, "conversation-id"):
+      raise ValueError("boom")
+
+  after = dict(context_api.get_current())
+
+  assert after == before

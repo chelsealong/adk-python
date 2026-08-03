@@ -73,14 +73,18 @@ def record_invocation(
     # finalized (GeneratorExit / CancelledError) in a different execution
     # context than the one where the span was attached, so an automatic
     # detach() would raise "Token was created in a different Context" (OTel
-    # swallows it but logs an ERROR). Detach only on normal completion; always
-    # end the span.
+    # swallows it but logs an ERROR). GeneratorExit/CancelledError are
+    # BaseException, not Exception, so they skip the `except` clause below
+    # and reach `finally` with `should_detach` still False -- detach is
+    # skipped only for that abandonment case. Any ordinary exception is
+    # still raised in the same context it was attached in, so it must still
+    # detach like the happy path does.
     span = tracing.tracer.start_span("invocation")
     token = context_api.attach(trace.set_span_in_context(span))
-    completed = False
+    should_detach = False
     try:
       yield
-      completed = True
+      should_detach = True
     except Exception as exc:  # pylint: disable=broad-exception-caught
       # Mirrors start_as_current_span's default error recording (it only
       # catches Exception, not GeneratorExit/BaseException) so the span's
@@ -89,9 +93,10 @@ def record_invocation(
       span.set_status(
           trace.Status(trace.StatusCode.ERROR, f"{type(exc).__name__}: {exc}")
       )
+      should_detach = True
       raise
     finally:
-      if completed:
+      if should_detach:
         context_api.detach(token)
       span.end()
     return
