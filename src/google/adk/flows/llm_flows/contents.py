@@ -198,6 +198,12 @@ def _rearrange_events_for_latest_function_response(
   between the initial function_call and the latest function_response will be
   removed.
 
+  If the latest function_response has no matching function_call anywhere in
+  ``events`` (e.g. the call was dropped by a branch/isolation filter, or a
+  turn died mid-dispatch before the call was persisted), the orphaned
+  function_response part(s) are dropped instead of raising, so a single
+  unpairable response does not permanently poison the session.
+
   Args:
     events: A list of events.
 
@@ -254,14 +260,12 @@ def _rearrange_events_for_latest_function_response(
   if function_call_event_idx == -1:
     logger.debug(
         'No function call event found for function responses ids: %s in'
-        ' event list: %s',
+        ' event list: %s. Dropping the orphaned function response(s) so the'
+        ' turn can proceed.',
         function_responses_ids,
         events,
     )
-    raise ValueError(
-        'No function call event found for function responses ids:'
-        f' {function_responses_ids}'
-    )
+    return _drop_orphaned_function_responses(events, function_responses_ids)
 
   # collect all function response between last function response event
   # and function call event
@@ -283,6 +287,46 @@ def _rearrange_events_for_latest_function_response(
   )
 
   return result_events
+
+
+def _drop_orphaned_function_responses(
+    events: list[Event],
+    orphaned_ids: set[str | None],
+) -> list[Event]:
+  """Drops function_response parts in the trailing event that lack a call.
+
+  Only the orphaned parts are removed; any other parts on the trailing event
+  (text, other function responses, etc.) are preserved. If nothing remains on
+  the trailing event afterwards, the event itself is dropped.
+
+  Args:
+    events: The events being rearranged; the last event is assumed to carry
+      the orphaned function response(s).
+    orphaned_ids: The function_response ids with no matching function_call
+      anywhere in ``events``.
+
+  Returns:
+    ``events`` with the orphaned function_response part(s) removed.
+  """
+  trailing_event = events[-1]
+  if not trailing_event.content or not trailing_event.content.parts:
+    return events[:-1]
+
+  kept_parts = [
+      part
+      for part in trailing_event.content.parts
+      if not (
+          part.function_response and part.function_response.id in orphaned_ids
+      )
+  ]
+  if not kept_parts:
+    return events[:-1]
+
+  new_event = trailing_event.model_copy(deep=True)
+  new_event.content = trailing_event.content.model_copy(
+      update={'parts': kept_parts}
+  )
+  return events[:-1] + [new_event]
 
 
 def _is_part_invisible(

@@ -552,8 +552,15 @@ async def test_function_rearrangement_preserves_other_content():
 
 
 @pytest.mark.asyncio
-async def test_error_when_function_response_without_matching_call():
-  """Test error when function response has no matching function call."""
+async def test_orphaned_function_response_without_matching_call_is_dropped():
+  """A function response with no matching call anywhere is dropped, not fatal.
+
+  Regression test: previously this raised ValueError from
+  ``_rearrange_events_for_latest_function_response`` while building
+  ``llm_request.contents``, before ``before_model_callback`` ever runs — so
+  no user hook could intercept it and the session was permanently poisoned
+  (every later turn replayed the same history and re-raised).
+  """
   agent = Agent(model="gemini-2.5-flash", name="test_agent")
   llm_request = LlmRequest(model="gemini-2.5-flash")
   invocation_context = await testing_utils.create_invocation_context(
@@ -584,9 +591,82 @@ async def test_error_when_function_response_without_matching_call():
   ]
   invocation_context.session.events = events
 
-  # This should raise a ValueError during processing
-  with pytest.raises(ValueError, match="No function call event found"):
-    async for _ in contents.request_processor.run_async(
-        invocation_context, llm_request
-    ):
-      pass
+  # This must NOT raise; the orphaned response is dropped and the turn
+  # proceeds with the surviving history.
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("Regular message"),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_orphaned_function_response_after_balanced_history_is_dropped():
+  """A trailing orphaned response is dropped even with prior balanced pairs.
+
+  Mirrors the repro from the bug report: a normal call/response pair earlier
+  in history, followed by a trailing function response (from a different,
+  never-persisted call) that must not poison the whole turn.
+  """
+  agent = Agent(model="gemini-2.5-flash", name="test_agent")
+  llm_request = LlmRequest(model="gemini-2.5-flash")
+  invocation_context = await testing_utils.create_invocation_context(
+      agent=agent
+  )
+
+  function_call = types.FunctionCall(id="id-call", name="tool_a", args={})
+  function_response = types.FunctionResponse(
+      id="id-call", name="tool_a", response={"result": "ok"}
+  )
+  orphaned_response = types.FunctionResponse(
+      id="orphan-1", name="ghost_tool", response={"result": "ok"}
+  )
+
+  events = [
+      Event(
+          invocation_id="inv1",
+          author="user",
+          content=types.UserContent("hi"),
+      ),
+      Event(
+          invocation_id="inv2",
+          author="test_agent",
+          content=types.ModelContent([types.Part(function_call=function_call)]),
+      ),
+      Event(
+          invocation_id="inv3",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=function_response)]
+          ),
+      ),
+      Event(
+          invocation_id="inv4",
+          author="test_agent",
+          content=types.ModelContent([types.Part(text="answer")]),
+      ),
+      # Trailing orphan: no matching call anywhere in history.
+      Event(
+          invocation_id="inv5",
+          author="user",
+          content=types.UserContent(
+              [types.Part(function_response=orphaned_response)]
+          ),
+      ),
+  ]
+  invocation_context.session.events = events
+
+  async for _ in contents.request_processor.run_async(
+      invocation_context, llm_request
+  ):
+    pass
+
+  assert llm_request.contents == [
+      types.UserContent("hi"),
+      types.ModelContent([types.Part(function_call=function_call)]),
+      types.UserContent([types.Part(function_response=function_response)]),
+      types.ModelContent([types.Part(text="answer")]),
+  ]
