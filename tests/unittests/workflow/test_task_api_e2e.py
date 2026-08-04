@@ -37,6 +37,8 @@ from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.adk.workflow import node
@@ -600,3 +602,109 @@ async def test_strict_isolation_filter_excludes_foreign_scope(
   assert (
       'SECRET-SHOULD-NOT-LEAK' not in rendered
   ), 'stranger event leaked across isolation_scope filter'
+
+
+# ---------------------------------------------------------------------------
+# 11. Progressive-SSE dispatch: a task-delegation FC must not be dispatched
+#    from a partial=True chunk. Only the partial=False aggregate is ever
+#    persisted by the Runner, so dispatching early synthesizes a task
+#    FunctionResponse whose matching FunctionCall never lands in the
+#    session, orphaning it and poisoning every later contents build.
+# ---------------------------------------------------------------------------
+
+
+class _ProgressiveSseDispatchLlm(BaseLlm):
+  """Coordinator stub emitting the progressive-SSE task-dispatch shape.
+
+  The first call yields the task FC twice: a partial=True chunk first,
+  then the partial=False aggregate re-carrying the same FC (same id) —
+  exactly the shape ``StreamingResponseAggregator`` produces under
+  ``PROGRESSIVE_SSE_STREAMING``.
+  """
+
+  model: str = 'progressive-sse-dispatch-stub'
+  call_count: int = 0
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ['progressive-sse-dispatch-stub']
+
+  async def generate_content_async(self, llm_request, stream: bool = False):
+    self.call_count += 1
+    if self.call_count == 1:
+      fc = types.FunctionCall(
+          name='child', args={'request': 'do the thing'}, id='fc-dispatch-1'
+      )
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part(function_call=fc)]
+          ),
+          partial=True,
+      )
+      yield LlmResponse(
+          content=types.Content(
+              role='model', parts=[types.Part(function_call=fc)]
+          ),
+          partial=False,
+          turn_complete=True,
+      )
+    else:
+      yield LlmResponse(
+          content=types.Content(
+              role='model',
+              parts=[types.Part.from_text(text='All done: child output.')],
+          ),
+          partial=False,
+          turn_complete=True,
+      )
+
+
+@pytest.mark.asyncio
+async def test_chat_dispatch_ignores_partial_sse_chunk_for_task_fc(
+    request: pytest.FixtureRequest,
+):
+  """Regression test for google/adk-python#6583."""
+  child = _make_task_agent(
+      name='child',
+      responses=[_finish_part({'result': 'child output'})],
+  )
+  root = LlmAgent(
+      name='root',
+      model=_ProgressiveSseDispatchLlm(),
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('top landing pages')
+  )
+
+  # The coordinator's task-delegation FC must be persisted alongside the
+  # synthesized FR -- otherwise the FR is orphaned and every later
+  # contents build raises ValueError('No function call event found for
+  # function responses ids: ...'). Only non-partial events are ever
+  # persisted by the Runner, so check the persisted session, not the raw
+  # stream (which legitimately still includes the partial=True chunk).
+  persisted = runner.session.events
+  fc_ids = [
+      fc.id
+      for e in persisted
+      for fc in e.get_function_calls()
+      if fc.name == 'child'
+  ]
+  fr_ids = [
+      fr.id
+      for e in persisted
+      for fr in e.get_function_responses()
+      if fr.name == 'child'
+  ]
+  assert fc_ids == ['fc-dispatch-1'], f'task FC was not persisted: {fc_ids}'
+  assert fr_ids == ['fc-dispatch-1'], f'task FR missing or mismatched: {fr_ids}'
+
+  finish_args = _collect_finish_outputs(events)
+  assert finish_args == [{'result': 'child output'}]
+  assert any(
+      'All done: child output.' in t for t in _get_text_responses(events)
+  )

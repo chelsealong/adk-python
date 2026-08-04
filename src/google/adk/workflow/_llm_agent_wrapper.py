@@ -65,7 +65,18 @@ def _extract_task_delegation_fcs(
   """Return task-delegation FCs from this event.
 
   A task-delegation FC is one whose tool is a ``_TaskAgentTool`` instance.
+
+  Gated on non-partial events: under progressive SSE streaming, an
+  intermediate ``partial=True`` chunk can carry the FC (with possibly
+  truncated args) before the Runner persists anything. Only the final
+  ``partial=False`` aggregate is ever appended to the session, so
+  dispatching from a partial chunk would synthesize and persist a task
+  FunctionResponse whose matching FunctionCall never made it into the
+  session, orphaning the response on the next contents build.
   """
+  if event.partial:
+    return []
+
   from ..tools.agent_tool import _TaskAgentTool
 
   return [
