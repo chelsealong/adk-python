@@ -191,6 +191,74 @@ async def test_chat_root_with_two_task_sub_agents_sequential(
 
 
 # ---------------------------------------------------------------------------
+# 2b. LlmAgent root → regular tool + task sub-agent FC in the same turn
+# ---------------------------------------------------------------------------
+
+
+def _set_todo_list(items: list[str]) -> dict[str, Any]:
+  """A regular (non-deferred) function tool."""
+  return {'status': 'ok', 'items_written': items}
+
+
+@pytest.mark.asyncio
+async def test_chat_root_mixed_regular_and_task_fc_in_same_turn(
+    request: pytest.FixtureRequest,
+):
+  """A regular tool FC and a task-delegation FC in one model turn.
+
+  Regression test: the chat wrapper used to ``break`` out of its event
+  generator as soon as it saw the task-delegation FC, closing the
+  underlying ``run_iter`` before the regular tool's function-response
+  (built by ``flows/llm_flows/functions.py`` from the *same* turn) was
+  ever produced. That silently dropped the regular tool call and left
+  the session with more function calls than function responses for the
+  turn.
+  """
+  child = _make_task_agent(
+      name='ga_specialist',
+      responses=[_finish_part({'result': 'GA analysis complete'})],
+  )
+
+  root = LlmAgent(
+      name='root',
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  types.Part.from_function_call(
+                      name='_set_todo_list',
+                      args={'items': ['write upstream bug report']},
+                  ),
+                  _delegate_part('ga_specialist', 'analyse GA traffic'),
+              ],
+              'Done. Todo written and GA analysed.',
+          ]
+      ),
+      tools=[FunctionTool(_set_todo_list)],
+      sub_agents=[child],
+  )
+
+  app = App(name=request.function.__name__, root_agent=root)
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content(
+          'Write my todo list and analyse GA traffic.'
+      )
+  )
+
+  fc_names = [fc.name for e in events for fc in e.get_function_calls()]
+  fr_names = [fr.name for e in events for fr in e.get_function_responses()]
+  assert fc_names.count('_set_todo_list') == fr_names.count('_set_todo_list'), (
+      f'regular tool FC/FR count mismatch: fc_names={fc_names},'
+      f' fr_names={fr_names}'
+  )
+  assert any(
+      'Done. Todo written and GA analysed.' in t
+      for t in _get_text_responses(events)
+  )
+
+
+# ---------------------------------------------------------------------------
 # 3. LlmAgent root → task sub-agent → nested task sub-agent
 # ---------------------------------------------------------------------------
 

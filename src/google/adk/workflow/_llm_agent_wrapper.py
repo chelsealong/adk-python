@@ -392,11 +392,28 @@ async def run_llm_agent_as_node(
         async for event in run_iter:
           yield event
           task_fcs = _extract_task_delegation_fcs(event, tools_dict)
+          has_other_fcs = len(task_fcs) < len(event.get_function_calls())
           for fc in task_fcs:
             output = await _dispatch_task_fc(agent, fc, ctx)
             yield _synthesize_task_fr_event(fc, output)
           if task_fcs:
             had_task_fc = True
+            if has_other_fcs:
+              # This mixed turn also called non-deferred tools (e.g. a
+              # regular FunctionTool) alongside the task delegation. Their
+              # FR is auto-built by flows/llm_flows/functions.py and
+              # yielded as the next item from run_iter -- still part of
+              # this same LLM step, with no model call in between.
+              # Breaking immediately (as if this were a pure task-only
+              # turn) would close run_iter before that FR is ever
+              # computed, silently dropping the tool call and
+              # unbalancing the FC/FR history. Pull it before breaking.
+              try:
+                extra_event = await run_iter.__anext__()
+              except StopAsyncIteration:
+                pass
+              else:
+                yield extra_event
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
             target_name = event.actions.transfer_to_agent
