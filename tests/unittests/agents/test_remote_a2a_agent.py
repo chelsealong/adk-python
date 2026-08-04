@@ -110,6 +110,27 @@ def _make_stream_message(message: A2AMessage):
   return message
 
 
+def _make_stream_status_update(update: TaskStatusUpdateEvent):
+  """Wrap a TaskStatusUpdateEvent in the raw shape ``send_message`` yields.
+
+  On 1.x ``send_message`` yields ``StreamResponse`` proto objects; on 0.3.x it
+  yields ``(Task, TaskStatusUpdateEvent)`` tuples directly, so a matching task
+  is built here to carry the same state.
+  """
+  if _compat.IS_A2A_V1:
+    from a2a.types import StreamResponse
+
+    resp = StreamResponse()
+    resp.status_update.CopyFrom(update)
+    return resp
+  task = _compat.make_task(
+      id=update.task_id,
+      status=_compat.make_task_status(update.status.state),
+      context_id=update.context_id,
+  )
+  return (task, update)
+
+
 def _make_artifact_chunk(text: str, *, append: bool, last_chunk: bool):
   """Build one streamed chunk of an artifact, version-agnostically."""
   return TaskArtifactUpdateEvent(
@@ -2966,6 +2987,79 @@ class TestRemoteA2aAgentExecution:
                     A2A_METADATA_PREFIX + "request"
                     in mock_event.custom_metadata
                 )
+
+  @pytest.mark.asyncio
+  async def test_run_async_impl_emits_error_when_stream_ends_mid_task(self):
+    """A stream that closes while the task is still WORKING must not end
+    silently: with no terminal task state and no exception, the invocation
+    should emit an error event describing the truncation."""
+    with patch.object(self.agent, "_ensure_resolved"):
+      with patch.object(
+          self.agent, "_create_a2a_request_for_user_function_response"
+      ) as mock_create_func:
+        mock_create_func.return_value = None
+
+        with patch.object(
+            self.agent, "_construct_message_parts_from_session"
+        ) as mock_construct:
+          mock_a2a_part = _compat.make_text_part("test")
+          mock_construct.return_value = ([mock_a2a_part], "context-123")
+
+          mock_a2a_client = create_autospec(spec=A2AClient, instance=True)
+          # A single "working" status update carrying a message, then the
+          # stream closes cleanly (peer vanished) without ever reaching a
+          # terminal task state.
+          update = _compat.make_task_status_update_event(
+              task_id="task-123",
+              context_id="context-123",
+              status=_compat.make_task_status(
+                  _compat.TS_WORKING,
+                  message=_compat.make_message(
+                      message_id="m1",
+                      role="agent",
+                      parts=[_compat.make_text_part("thinking...")],
+                  ),
+              ),
+              final=False,
+          )
+          mock_send_message = AsyncMock()
+          mock_send_message.__aiter__.return_value = [
+              _make_stream_status_update(update)
+          ]
+          mock_a2a_client.send_message.return_value = mock_send_message
+          self.agent._a2a_client = mock_a2a_client
+          self.agent._ensure_resolved.return_value = mock_a2a_client
+
+          mock_event = Event(
+              author=self.agent.name,
+              invocation_id=self.mock_context.invocation_id,
+              branch=self.mock_context.branch,
+          )
+
+          with (
+              patch.object(self.agent, "_handle_a2a_response") as mock_handle,
+              patch("google.adk.agents.remote_a2a_agent.build_a2a_request_log"),
+              patch(
+                  "google.adk.agents.remote_a2a_agent.build_a2a_response_log"
+              ),
+              patch(
+                  "google.adk.a2a._compat.a2a_to_dict",
+                  return_value={"k": "v"},
+              ),
+          ):
+            mock_handle.return_value = mock_event
+            events = []
+            async for event in self.agent._run_async_impl(self.mock_context):
+              events.append(event)
+
+          assert len(events) == 2
+          assert events[0].error_message is None
+          assert events[1].error_message is not None
+          assert "terminal state" in events[1].error_message
+          assert (
+              events[1].custom_metadata[A2A_METADATA_PREFIX + "task_id"]
+              == "task-123"
+          )
 
   @pytest.mark.asyncio
   async def test_run_async_impl_closes_stream_when_abandoned(self):

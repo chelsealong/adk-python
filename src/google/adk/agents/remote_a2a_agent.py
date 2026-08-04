@@ -873,6 +873,7 @@ class RemoteA2aAgent(BaseAgent):
       # status/artifact updates are aggregated into a running task (matching the
       # 0.3.x client behavior).
       normalize_stream_item = _compat.make_stream_normalizer()
+      last_task = None
       async with Aclosing(
           _compat.send_message(
               a2a_client,
@@ -890,6 +891,7 @@ class RemoteA2aAgent(BaseAgent):
             task = a2a_response[0]
             if task:
               metadata = task.metadata
+              last_task = task
           else:
             metadata = a2a_response.metadata
 
@@ -925,6 +927,37 @@ class RemoteA2aAgent(BaseAgent):
             )
 
           yield event
+
+      if (
+          last_task is not None
+          and last_task.status
+          and last_task.status.state
+          in (_compat.TS_SUBMITTED, _compat.TS_WORKING)
+      ):
+        # The stream ended (no exception, no error response) while the last
+        # known task state was still in-progress. This happens when the peer
+        # vanishes mid-turn (process dies, side times out, proxy closes the
+        # connection): the async generator simply finishes, so without this
+        # check the invocation would end silently with no indication that
+        # the task never reached a terminal state.
+        error_message = (
+            "A2A stream ended before the task reached a terminal state"
+            f" (last known state: {last_task.status.state}, task_id:"
+            f" {last_task.id})."
+        )
+        logger.error(error_message)
+        yield Event(
+            author=self.name,
+            error_message=error_message,
+            invocation_id=ctx.invocation_id,
+            branch=ctx.branch,
+            custom_metadata={
+                A2A_METADATA_PREFIX
+                + "request": _compat.a2a_to_dict(a2a_request),
+                A2A_METADATA_PREFIX + "error": error_message,
+                A2A_METADATA_PREFIX + "task_id": last_task.id,
+            },
+        )
 
     except _compat.A2A_HTTP_ERRORS as e:
       error_message = f"A2A request failed: {e}"
