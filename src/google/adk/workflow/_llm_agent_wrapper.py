@@ -401,19 +401,26 @@ async def run_llm_agent_as_node(
             if has_other_fcs:
               # This mixed turn also called non-deferred tools (e.g. a
               # regular FunctionTool) alongside the task delegation. Their
-              # FR is auto-built by flows/llm_flows/functions.py and
-              # yielded as the next item from run_iter -- still part of
-              # this same LLM step, with no model call in between.
-              # Breaking immediately (as if this were a pure task-only
-              # turn) would close run_iter before that FR is ever
-              # computed, silently dropping the tool call and
-              # unbalancing the FC/FR history. Pull it before breaking.
-              try:
-                extra_event = await run_iter.__anext__()
-              except StopAsyncIteration:
-                pass
-              else:
+              # merged FR is auto-built by flows/llm_flows/functions.py --
+              # still part of this same LLM step, with no model call in
+              # between -- but _postprocess_handle_function_calls_async can
+              # yield interstitial events first (an auth request if the
+              # tool needs credentials, a tool-confirmation request if it
+              # has require_confirmation=True) before the real FR. Breaking
+              # immediately (as if this were a pure task-only turn) would
+              # close run_iter before that FR is ever produced, silently
+              # dropping the tool call and unbalancing the FC/FR history.
+              # Drain events, forwarding each, until the merged FR itself
+              # arrives (identified by carrying function responses) or the
+              # generator is exhausted.
+              while True:
+                try:
+                  extra_event = await run_iter.__anext__()
+                except StopAsyncIteration:
+                  break
                 yield extra_event
+                if extra_event.get_function_responses():
+                  break
             break  # close this run_iter; outer loop re-enters
           if event.actions.transfer_to_agent:
             target_name = event.actions.transfer_to_agent

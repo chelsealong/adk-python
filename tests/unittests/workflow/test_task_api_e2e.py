@@ -258,6 +258,67 @@ async def test_chat_root_mixed_regular_and_task_fc_in_same_turn(
   )
 
 
+@pytest.mark.asyncio
+async def test_chat_root_mixed_confirmation_and_task_fc_in_same_turn(
+    request: pytest.FixtureRequest,
+):
+  """A require_confirmation tool FC and a task-delegation FC in one turn.
+
+  Regression test: ``_postprocess_handle_function_calls_async`` can yield a
+  tool-confirmation-request event *before* the real merged function-response
+  event for the same turn. The chat wrapper used to pull exactly one event
+  after a mixed turn's task-delegation FC and assume it was always the FR --
+  when it's actually the confirmation request, the real FR stays stuck
+  behind a closed ``run_iter`` and the FC/FR counts go out of balance again.
+  """
+  confirmation_tool = FunctionTool(
+      func=_confirmed_task_step,
+      require_confirmation=True,
+  )
+  child = _make_task_agent(
+      name='ga_specialist',
+      responses=[_finish_part({'result': 'GA analysis complete'})],
+  )
+
+  root = LlmAgent(
+      name='root',
+      model=testing_utils.MockModel.create(
+          responses=[
+              [
+                  types.Part.from_function_call(
+                      name=confirmation_tool.name,
+                      args={},
+                  ),
+                  _delegate_part('ga_specialist', 'analyse GA traffic'),
+              ],
+              'Done.',
+          ]
+      ),
+      tools=[confirmation_tool],
+      sub_agents=[child],
+  )
+
+  app = App(
+      name=request.function.__name__,
+      root_agent=root,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  runner = testing_utils.InMemoryRunner(app=app)
+
+  events = await runner.run_async(
+      testing_utils.get_user_content('Confirm a step and analyse GA traffic.')
+  )
+
+  fc_names = [fc.name for e in events for fc in e.get_function_calls()]
+  fr_names = [fr.name for e in events for fr in e.get_function_responses()]
+  assert fc_names.count(confirmation_tool.name) == fr_names.count(
+      confirmation_tool.name
+  ), (
+      f'confirmation-required tool FC/FR count mismatch: fc_names={fc_names},'
+      f' fr_names={fr_names}'
+  )
+
+
 # ---------------------------------------------------------------------------
 # 3. LlmAgent root → task sub-agent → nested task sub-agent
 # ---------------------------------------------------------------------------
