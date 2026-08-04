@@ -55,6 +55,16 @@ MOCK_FUNCTION_CALL_FOR_REQUIRED_USER_AUTH = (
     "mock_function_call_for_required_user_auth"
 )
 
+# Task states that close out the task: no further turns happen on the
+# remote peer, so an event carrying one of these is always the end of the
+# turn from the caller's perspective, whether or not it also carries tool
+# activity.
+_TERMINAL_TASK_STATES = (
+    _compat.TS_COMPLETED,
+    _compat.TS_FAILED,
+    _compat.TS_CANCELED,
+)
+
 A2AMessageToEventConverter = Callable[
     [
         Message,
@@ -533,6 +543,15 @@ def convert_a2a_task_to_event(
             a2a_task.status.state, output_parts, long_running_function_ids
         )
     )
+
+    if a2a_task.status.state in _TERMINAL_TASK_STATES:
+      # A terminal task state means the peer's turn is over: any function
+      # calls/responses bundled into this event are historical record of
+      # what the peer already did, not something the caller should still
+      # wait on. Without this, Event.is_final_response() returns False for
+      # a fully completed, non-streaming A2A turn whenever it carried tool
+      # activity, since the predicate cannot see the underlying task state.
+      event_actions.skip_summarization = True
 
     return _create_event(
         output_parts,

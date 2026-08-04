@@ -739,6 +739,57 @@ class TestA2AToEventConverters:
       assert called_message.role == _compat.ROLE_AGENT
       assert called_message.parts == [artifact_part]
 
+  def test_convert_a2a_task_to_event_completed_with_tool_activity_is_final(
+      self,
+  ):
+    """A completed non-streaming task with tool activity is final.
+
+    Regression test for https://github.com/google/adk-python/issues/6584:
+    a peer that does not stream returns the whole turn (narration, function
+    call, function response) as one completed Task. The resulting event
+    must satisfy ``is_final_response()`` even though it carries a function
+    call and a function response, since the task is already done and there
+    is no follow-up turn to wait for.
+    """
+    a2a_part = _compat.make_text_part("dummy")
+    task = _compat.make_task(
+        id="task-1",
+        context_id="context-1",
+        status=_compat.make_task_status(
+            _compat.TS_COMPLETED, timestamp="2024-01-01T00:00:00Z"
+        ),
+        artifacts=[
+            _compat.make_artifact(
+                artifact_id="art-1", artifact_type="message", parts=[a2a_part]
+            )
+        ],
+    )
+
+    function_call_part = genai_types.Part(
+        function_call=genai_types.FunctionCall(name="divide", args={})
+    )
+    function_response_part = genai_types.Part(
+        function_response=genai_types.FunctionResponse(
+            name="divide", response={"error": "cannot divide by zero"}
+        )
+    )
+    text_part = genai_types.Part.from_text(text="The result is an error.")
+    mock_part_converter = Mock(
+        return_value=[function_call_part, function_response_part, text_part]
+    )
+
+    event = convert_a2a_task_to_event(
+        task,
+        author="test-author",
+        invocation_context=self.mock_invocation_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.get_function_calls()
+    assert event.get_function_responses()
+    assert event.actions.skip_summarization is True
+    assert event.is_final_response() is True
+
   def test_convert_a2a_task_to_event_with_status_message(self):
     """Test convert_a2a_task_to_event with status message (no artifacts)."""
 

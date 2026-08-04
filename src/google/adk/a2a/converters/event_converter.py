@@ -257,6 +257,21 @@ def convert_a2a_task_to_event(
         event: Event = convert_a2a_message_to_event(
             message, author, invocation_context, part_converter=part_converter
         )
+        task_state = (
+            getattr(a2a_task.status, "state", None) if a2a_task.status else None
+        )
+        if task_state in (
+            _compat.TS_COMPLETED,
+            _compat.TS_FAILED,
+            _compat.TS_CANCELED,
+        ):
+          # A terminal task state means the peer's turn is over: any
+          # function calls/responses bundled into this event are historical
+          # record of what the peer already did, not something the caller
+          # should still wait on. Without this, is_final_response() returns
+          # False for a fully completed, non-streaming A2A turn whenever it
+          # carried tool activity.
+          event.actions.skip_summarization = True
         return event
       except Exception as e:
         logger.error("Failed to convert A2A task message to event: %s", e)
