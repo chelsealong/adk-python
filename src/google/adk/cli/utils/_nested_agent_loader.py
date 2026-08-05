@@ -186,6 +186,7 @@ class NestedAgentLoader(AgentLoader):
   def _perform_load(self, agent_path: str) -> Union[BaseAgent, App]:
     """Internal logic to load an agent allowing slash-separated paths."""
     self._validate_agent_name(agent_path)
+    self._root_agent_type_mismatch = None
     # Determine the directory to use for loading
     if agent_path.startswith("__"):
       agents_dir = os.path.abspath(SPECIAL_AGENTS_DIR)
@@ -242,6 +243,18 @@ class NestedAgentLoader(AgentLoader):
           agents_dir=agents_dir,
       )
       return root_agent
+
+    # If a root_agent was found but had the wrong type, report that specific
+    # diagnosis instead of the generic not-found error below, which is
+    # actively misleading in this case (the agent *was* found in the right
+    # place; only its type is wrong).
+    if self._root_agent_type_mismatch is not None:
+      mismatched_path, mismatched_type = self._root_agent_type_mismatch
+      raise ValueError(
+          f"'{mismatched_path}' is a {mismatched_type.__name__}, not a"
+          " BaseAgent. If you meant to export an App, name it `app` instead"
+          " of `root_agent`."
+      )
 
     hint = ""
     agents_path = Path(agents_dir)
