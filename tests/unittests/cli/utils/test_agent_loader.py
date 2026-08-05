@@ -370,6 +370,41 @@ class TestAgentLoader:
 
       assert "No root_agent found for 'broken_agent'" in str(exc_info.value)
 
+  def test_agent_root_agent_wrong_type_error(self):
+    """Test that a `root_agent` of the wrong type reports its own diagnosis.
+
+    Assigning an `App` (or anything else that isn't a `BaseAgent`) to the
+    module-level `root_agent` name is a common mistake, since `App` also has
+    a `root_agent` field. The loader already detects and logs this exact
+    problem; the raised error should say so instead of falling through to the
+    generic "No root_agent found" / wrong-directory message, which is
+    actively misleading here.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+      temp_path = Path(temp_dir)
+
+      agent_file = temp_path / "mistyped_agent.py"
+      agent_file.write_text(dedent("""
+                from google.adk.agents import Agent
+                from google.adk.apps.app import App
+
+                root_agent = App(
+                    name="mistyped_agent",
+                    root_agent=Agent(name="mistyped_agent", model="gemini-2.0-flash"),
+                )
+            """))
+
+      loader = AgentLoader(str(temp_path))
+
+      with pytest.raises(ValueError) as exc_info:
+        loader.load_agent("mistyped_agent")
+
+      message = str(exc_info.value)
+      assert "mistyped_agent.root_agent" in message
+      assert "App" in message
+      assert "not a BaseAgent" in message
+      assert "No root_agent found" not in message
+
   def test_agent_internal_module_not_found_error(self):
     """Test error when an agent tries to import a nonexistent module."""
     with tempfile.TemporaryDirectory() as temp_dir:
