@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Any
 from typing import Dict
@@ -75,6 +76,37 @@ def test_generate_files_with_api_key(agent_folder: Path) -> None:
   assert (
       agent_folder / "__init__.py"
   ).read_text() == "from . import agent as agent\n"
+
+
+@pytest.mark.skipif(
+    shutil.which("ruff") is None, reason="ruff is not installed"
+)
+def test_generate_files_init_py_satisfies_ruff_f401(
+    agent_folder: Path,
+) -> None:
+  """The generated __init__.py must not trip ruff's F401 (unused import).
+
+  Uses `--isolated` so the check reflects ruff's *default* behavior for a
+  downstream user's project, rather than this repo's own pyproject.toml
+  (which carries a `per-file-ignores` exemption for "**/__init__.py").
+  """
+  cli_create._generate_files(
+      str(agent_folder),
+      google_api_key="dummy-key",
+      model="gemini-2.5-flash",
+      type="code",
+  )
+
+  result = subprocess.run(
+      ["ruff", "check", "--isolated", "--select", "F401", "__init__.py"],
+      cwd=agent_folder,
+      capture_output=True,
+      text=True,
+  )
+
+  assert (
+      result.returncode == 0
+  ), f"ruff flagged the generated __init__.py:\n{result.stdout}{result.stderr}"
 
 
 def test_generate_files_with_gcp(agent_folder: Path) -> None:
