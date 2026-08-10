@@ -1854,6 +1854,18 @@ _active_invocation_id_ctx: contextvars.ContextVar[Optional[str]] = (
     contextvars.ContextVar("_bq_analytics_active_invocation_id", default=None)
 )
 
+# Bridges the transferring agent's span id across the asyncio-task
+# boundary that DynamicNodeScheduler introduces on every
+# `transfer_to_agent` hop: the target agent runs in a *new* task whose
+# context is a copy taken before the caller's agent span was ever
+# pushed, so `_span_records_ctx` mutations made inside the caller's
+# task never reach it. A plain dict (not a ContextVar) is required
+# here precisely because it must be visible across that task boundary.
+# Keyed by (invocation_id, target_agent_name); consumed (popped) by the
+# target's before_agent_callback so a stale entry can't leak into a
+# later, unrelated transfer to an agent of the same name.
+_pending_transfer_parent_span: dict[tuple[str, str], str] = {}
+
 
 @dataclass
 class _SpanRecord:
@@ -2167,6 +2179,45 @@ class TraceManager:
         if record.span_id == span_id:
           return record.first_token_time
     return None
+
+  @staticmethod
+  def stash_transfer_parent_span(
+      invocation_id: str, target_agent_name: str, span_id: str
+  ) -> None:
+    """Records the transferring agent's span id for the target agent.
+
+    Called from ``after_tool_callback`` right after a
+    ``transfer_to_agent`` call, while the caller's agent span is still
+    resolvable on the plugin stack. See ``_pending_transfer_parent_span``
+    for why this can't be a ContextVar.
+    """
+    _pending_transfer_parent_span[(invocation_id, target_agent_name)] = (
+        span_id
+    )
+
+  @staticmethod
+  def pop_transfer_parent_span(
+      invocation_id: str, agent_name: str
+  ) -> Optional[str]:
+    """Consumes the stashed parent span id for ``agent_name``, if any."""
+    return _pending_transfer_parent_span.pop(
+        (invocation_id, agent_name), None
+    )
+
+  @staticmethod
+  def discard_transfer_parent_spans(invocation_id: str) -> None:
+    """Drops any unconsumed stashed entries for ``invocation_id``.
+
+    Safety net for invocations that end (e.g. error) between a
+    transfer_to_agent call and the target agent actually starting.
+    """
+    stale_keys = [
+        key
+        for key in _pending_transfer_parent_span
+        if key[0] == invocation_id
+    ]
+    for key in stale_keys:
+      del _pending_transfer_parent_span[key]
 
 
 # ==============================================================================
@@ -6585,6 +6636,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Cleanup must run even if _log_event raises, otherwise
       # stale invocation metadata leaks into the next invocation.
       TraceManager.clear_stack()
+      TraceManager.discard_transfer_parent_spans(invocation_context.invocation_id)
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)
       # Flush before returning if configured; otherwise the background batch
@@ -6604,10 +6656,25 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     """
     TraceManager.init_trace(callback_context)
     TraceManager.push_span(callback_context, "agent")
+
+    # If this agent was just reached via `transfer_to_agent`, prefer the
+    # transferring agent's span (stashed by after_tool_callback) over
+    # whatever the plugin stack naturally resolves to -- the scheduler
+    # may have started this agent in a fresh asyncio task that never
+    # saw the transferring agent's span pushed. See
+    # `_pending_transfer_parent_span`.
+    event_data = None
+    transfer_parent_span_id = TraceManager.pop_transfer_parent_span(
+        callback_context.invocation_id, agent.name
+    )
+    if transfer_parent_span_id:
+      event_data = EventData(parent_span_id_override=transfer_parent_span_id)
+
     await self._log_event(
         "AGENT_STARTING",
         callback_context,
         raw_content=getattr(agent, "instruction", ""),
+        event_data=event_data,
     )
 
   @_safe_callback
@@ -6902,6 +6969,18 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     }
     span_id, duration = TraceManager.pop_span()
     parent_span_id, _ = TraceManager.get_current_span_and_parent()
+
+    # `parent_span_id` is the calling agent's own span (the tool span we
+    # just popped sat directly on top of it). On a transfer, stash it so
+    # the target agent's before_agent_callback -- which may run in a
+    # different asyncio task with no memory of this stack -- can use it
+    # as its AGENT_STARTING parent instead of falling back to the
+    # invocation root. See `_pending_transfer_parent_span`.
+    target_agent_name = tool_context.actions.transfer_to_agent
+    if target_agent_name and parent_span_id:
+      TraceManager.stash_transfer_parent_span(
+          tool_context.invocation_id, target_agent_name, parent_span_id
+      )
 
     event_data = EventData(
         latency_ms=duration,

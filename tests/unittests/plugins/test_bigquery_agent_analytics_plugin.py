@@ -9190,6 +9190,68 @@ class TestC4AgentTransfer:
         "to_agent": "specialist_agent",
     }
 
+  @pytest.mark.asyncio
+  async def test_transfer_parents_target_agent_on_transferring_agent(
+      self,
+      bq_plugin_inst,
+      mock_write_client,
+      invocation_context,
+      callback_context,
+      tool_context,
+      dummy_arrow_schema,
+  ):
+    """AGENT_STARTING for a transfer target must parent on the caller's
+    agent span, not the invocation root.
+
+    Regression test for adk-python#6665: DynamicNodeScheduler runs the
+    transfer target in a fresh asyncio Task, so by the time it starts,
+    the transferring agent's span has already been popped (via
+    after_agent_callback) from whatever stack that new task sees. Without
+    the fix, the target's parent silently falls back to the invocation
+    span instead of the transferring agent.
+    """
+    bigquery_agent_analytics_plugin.TraceManager.push_span(invocation_context)
+
+    caller_agent = mock.MagicMock()
+    caller_agent.name = "caller_agent"
+    await bq_plugin_inst.before_agent_callback(
+        agent=caller_agent, callback_context=callback_context
+    )
+    caller_span_id = (
+        bigquery_agent_analytics_plugin.TraceManager.get_current_span_id()
+    )
+
+    mock_tool = mock.create_autospec(
+        base_tool_lib.BaseTool, instance=True, spec_set=True
+    )
+    type(mock_tool).name = mock.PropertyMock(return_value="transfer_to_agent")
+    bigquery_agent_analytics_plugin.TraceManager.push_span(tool_context, "tool")
+    tool_context.actions.transfer_to_agent = "target_agent"
+    await bq_plugin_inst.after_tool_callback(
+        tool=mock_tool,
+        tool_args={"agent_name": "target_agent"},
+        tool_context=tool_context,
+        result={},
+    )
+
+    # The caller's AGENT_COMPLETED pops its span before the target agent
+    # ever starts -- this happens regardless of the task boundary.
+    await bq_plugin_inst.after_agent_callback(
+        agent=caller_agent, callback_context=callback_context
+    )
+
+    target_agent = mock.MagicMock()
+    target_agent.name = "target_agent"
+    await bq_plugin_inst.before_agent_callback(
+        agent=target_agent, callback_context=callback_context
+    )
+
+    await bq_plugin_inst.flush()
+    rows = await _get_captured_rows_async(mock_write_client, dummy_arrow_schema)
+    starting_rows = [r for r in rows if r["event_type"] == "AGENT_STARTING"]
+    assert len(starting_rows) == 2
+    assert starting_rows[1]["parent_span_id"] == caller_span_id
+
 
 class TestC5EventCompaction:
 
