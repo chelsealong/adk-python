@@ -2191,18 +2191,14 @@ class TraceManager:
     resolvable on the plugin stack. See ``_pending_transfer_parent_span``
     for why this can't be a ContextVar.
     """
-    _pending_transfer_parent_span[(invocation_id, target_agent_name)] = (
-        span_id
-    )
+    _pending_transfer_parent_span[(invocation_id, target_agent_name)] = span_id
 
   @staticmethod
   def pop_transfer_parent_span(
       invocation_id: str, agent_name: str
   ) -> Optional[str]:
     """Consumes the stashed parent span id for ``agent_name``, if any."""
-    return _pending_transfer_parent_span.pop(
-        (invocation_id, agent_name), None
-    )
+    return _pending_transfer_parent_span.pop((invocation_id, agent_name), None)
 
   @staticmethod
   def discard_transfer_parent_spans(invocation_id: str) -> None:
@@ -2212,9 +2208,7 @@ class TraceManager:
     transfer_to_agent call and the target agent actually starting.
     """
     stale_keys = [
-        key
-        for key in _pending_transfer_parent_span
-        if key[0] == invocation_id
+        key for key in _pending_transfer_parent_span if key[0] == invocation_id
     ]
     for key in stale_keys:
       del _pending_transfer_parent_span[key]
@@ -6636,7 +6630,9 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       # Cleanup must run even if _log_event raises, otherwise
       # stale invocation metadata leaks into the next invocation.
       TraceManager.clear_stack()
-      TraceManager.discard_transfer_parent_spans(invocation_context.invocation_id)
+      TraceManager.discard_transfer_parent_spans(
+          invocation_context.invocation_id
+      )
       _active_invocation_id_ctx.set(None)
       _root_agent_name_ctx.set(None)
       # Flush before returning if configured; otherwise the background batch
