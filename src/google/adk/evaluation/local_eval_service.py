@@ -451,7 +451,7 @@ class LocalEvalService(BaseEvalService):
     for idx, invocation in enumerate(eval_metric_result_per_invocation):
       invocation_result = (
           evaluation_result.per_invocation_results[idx]
-          if evaluation_result.overall_eval_status != EvalStatus.NOT_EVALUATED
+          if idx < len(evaluation_result.per_invocation_results)
           else PerInvocationResult(
               actual_invocation=invocation.actual_invocation
           )

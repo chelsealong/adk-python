@@ -85,6 +85,10 @@ def eval_service(
       metric_info=FakeSingleSidedEvaluator.get_metric_info(),
       evaluator=FakeSingleSidedEvaluator,
   )
+  DEFAULT_METRIC_EVALUATOR_REGISTRY.register_evaluator(
+      metric_info=FakeMeasurementEvaluator.get_metric_info(),
+      evaluator=FakeMeasurementEvaluator,
+  )
   return LocalEvalService(
       root_agent=dummy_agent,
       eval_sets_manager=mock_eval_sets_manager,
@@ -167,6 +171,43 @@ class FakeSingleSidedEvaluator(Evaluator):
     return EvaluationResult(
         overall_score=0.95,
         overall_eval_status=EvalStatus.PASSED,
+        per_invocation_results=per_invocation_results,
+    )
+
+
+class FakeMeasurementEvaluator(Evaluator):
+  """Reports a real per-invocation score while deliberately staying NOT_EVALUATED.
+
+  Mirrors a non-pass/fail metric (e.g. cost, latency) that is not gated by a
+  threshold but still wants its per-invocation measurement surfaced.
+  """
+
+  def __init__(self, eval_metric: EvalMetric):
+    self._eval_metric = eval_metric
+
+  @staticmethod
+  def get_metric_info() -> MetricInfo:
+    return MetricInfo(
+        metric_name="fake_measurement_metric",
+        description="Fake non-pass/fail measurement metric description",
+        metric_value_info=MetricValueInfo(
+            interval=Interval(min_value=0.0, max_value=1000.0)
+        ),
+    )
+
+  @override
+  def evaluate_invocations(
+      self,
+      actual_invocations: list[Invocation],
+      expected_invocations: Optional[list[Invocation]] = None,
+      conversation_scenario: Optional[ConversationScenario] = None,
+  ) -> EvaluationResult:
+    per_invocation_results = [
+        PerInvocationResult(actual_invocation=actual, score=42.0)
+        for actual in actual_invocations
+    ]
+    return EvaluationResult(
+        overall_score=42.0,
         per_invocation_results=per_invocation_results,
     )
 
@@ -612,6 +653,50 @@ async def test_evaluate_single_inference_result_for_conversation_scenario_with_u
   )
 
   assert len(result.eval_metric_result_per_invocation) == 3
+
+
+@pytest.mark.asyncio
+async def test_evaluate_single_inference_result_preserves_not_evaluated_measurement(
+    eval_service, mock_eval_sets_manager, mocker
+):
+  """A metric reporting NOT_EVALUATED with real per-invocation results should
+  not have those results discarded (see issue #6725)."""
+  invocation = Invocation(
+      user_content=genai_types.Content(
+          parts=[genai_types.Part(text="test user content.")]
+      ),
+      final_response=genai_types.Content(
+          parts=[genai_types.Part(text="test final response.")]
+      ),
+  )
+  inference_result = InferenceResult(
+      app_name="test_app",
+      eval_set_id="test_eval_set",
+      eval_case_id="case1",
+      inferences=[invocation.model_copy(deep=True)],
+      session_id="session1",
+  )
+  eval_metric = EvalMetric(
+      metric_name="fake_measurement_metric", threshold=999999.0
+  )
+  evaluate_config = EvaluateConfig(eval_metrics=[eval_metric], parallelism=1)
+
+  mock_eval_case = mocker.MagicMock(spec=EvalCase)
+  mock_eval_case.conversation = [invocation.model_copy(deep=True)]
+  mock_eval_case.conversation_scenario = None
+  mock_eval_case.session_input = None
+  mock_eval_sets_manager.get_eval_case.return_value = mock_eval_case
+
+  _, result = await eval_service._evaluate_single_inference_result(
+      inference_result=inference_result, evaluate_config=evaluate_config
+  )
+
+  assert len(result.eval_metric_result_per_invocation) == 1
+  invocation_result = result.eval_metric_result_per_invocation[0]
+  assert len(invocation_result.eval_metric_results) == 1
+  metric_result = invocation_result.eval_metric_results[0]
+  assert metric_result.score == 42.0
+  assert metric_result.eval_status == EvalStatus.NOT_EVALUATED
 
 
 def test_generate_final_eval_status_doesn_t_throw_on(eval_service):
