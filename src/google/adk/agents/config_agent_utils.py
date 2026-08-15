@@ -86,26 +86,47 @@ def _resolve_agent_class(agent_class: str) -> type[BaseAgent]:
 _BLOCKED_YAML_KEYS = frozenset({"args"})
 _ENFORCE_YAML_KEY_DENYLIST = False
 
+# Built-ins whose `args` are declarative configuration, not a code reference.
+# The name is matched literally (never passed to importlib) and only exempts
+# `args` sitting next to that exact `name` inside a `tools:` list entry, so a
+# custom tool, factory, or agent class named "McpToolset" still gets no
+# exemption. `args` is then re-validated against McpToolsetConfig, an
+# ADK-owned Pydantic schema with `extra="forbid"`, when the tool is
+# constructed, so config-supplied fields outside that fixed schema are still
+# rejected.
+_SAFE_BUILTIN_TOOL_ARGS_NAMES = frozenset({"McpToolset"})
+
 
 def _set_enforce_yaml_key_denylist(value: bool) -> None:
   global _ENFORCE_YAML_KEY_DENYLIST
   _ENFORCE_YAML_KEY_DENYLIST = value
 
 
-def _check_config_for_blocked_keys(node: Any, filename: str) -> None:
+def _check_config_for_blocked_keys(
+    node: Any, filename: str, *, in_tools_list: bool = False
+) -> None:
   """Recursively check if the configuration contains any blocked keys."""
   if isinstance(node, dict):
+    is_safe_builtin_tool = (
+        in_tools_list and node.get("name") in _SAFE_BUILTIN_TOOL_ARGS_NAMES
+    )
     for key, value in node.items():
-      if key in _BLOCKED_YAML_KEYS:
+      if key in _BLOCKED_YAML_KEYS and not (
+          key == "args" and is_safe_builtin_tool
+      ):
         raise ValueError(
             f"Blocked key {key!r} found in {filename!r}. "
             f"The '{key}' field is not allowed in agent configurations "
             "because it can execute arbitrary code."
         )
-      _check_config_for_blocked_keys(value, filename)
+      _check_config_for_blocked_keys(
+          value, filename, in_tools_list=key == "tools"
+      )
   elif isinstance(node, list):
     for item in node:
-      _check_config_for_blocked_keys(item, filename)
+      _check_config_for_blocked_keys(
+          item, filename, in_tools_list=in_tools_list
+      )
 
 
 def _load_config_from_path(config_path: str) -> AgentConfig:

@@ -721,6 +721,69 @@ def test_load_config_from_path_blocks_args_when_enforced(tmp_path: Path):
     config_agent_utils._set_enforce_yaml_key_denylist(False)
 
 
+def test_load_config_from_path_allows_args_for_allowlisted_builtin_tool(
+    tmp_path: Path,
+):
+  """A `tools:` entry named McpToolset may declare `args`."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          name: my_agent
+          instruction: Use the MCP tools.
+          tools:
+            - name: McpToolset
+              args:
+                streamable_http_connection_params:
+                  url: https://example.com/mcp
+          """))
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    config_agent_utils._load_config_from_path(str(config_file))
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
+def test_load_config_from_path_blocks_args_for_non_allowlisted_tool_name(
+    tmp_path: Path,
+):
+  """A `tools:` entry naming a non-allowlisted tool still blocks `args`."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          name: my_agent
+          tools:
+            - name: my_package.my_module.MyToolClass
+              args:
+                key: value
+          """))
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    with pytest.raises(ValueError) as exc_info:
+      config_agent_utils._load_config_from_path(str(config_file))
+    assert "Blocked key 'args' found" in str(exc_info.value)
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
+def test_load_config_from_path_blocks_args_outside_tools_list(
+    tmp_path: Path,
+):
+  """`args` next to a `name: McpToolset` outside `tools:` is still blocked."""
+  config_file = tmp_path / "agent.yaml"
+  config_file.write_text(dedent("""\
+          name: my_agent
+          sub_agents:
+            - name: McpToolset
+              args:
+                key: value
+          """))
+  config_agent_utils._set_enforce_yaml_key_denylist(True)
+  try:
+    with pytest.raises(ValueError) as exc_info:
+      config_agent_utils._load_config_from_path(str(config_file))
+    assert "Blocked key 'args' found" in str(exc_info.value)
+  finally:
+    config_agent_utils._set_enforce_yaml_key_denylist(False)
+
+
 # --- Discriminator contract ---------------------------------------------
 
 
