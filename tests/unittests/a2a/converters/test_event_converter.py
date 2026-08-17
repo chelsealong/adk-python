@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -37,6 +38,7 @@ from google.adk.a2a.converters.utils import ADK_METADATA_KEY_PREFIX
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events.event import Event
 from google.genai import types as genai_types
+from pydantic import BaseModel
 import pytest
 
 
@@ -68,6 +70,7 @@ class TestEventConverter:
     self.mock_event.content = None
     self.mock_event.long_running_tool_ids = None
     self.mock_event.actions = None
+    self.mock_event.output = None
 
   def test_get_adk_event_metadata_key_success(self):
     """Test successful metadata key generation."""
@@ -687,6 +690,56 @@ class TestEventConverter:
     assert _compat.part_text(result.parts[0]) == "part 1"
     assert _compat.part_text(result.parts[1]) == "part 2"
     mock_convert_part.assert_called_once_with(mock_genai_part)
+
+  def test_convert_event_to_a2a_message_falls_back_to_output(self):
+    """A node's structured ``output`` must not be dropped when there is no
+
+    ``content`` (e.g. the terminal output of a Workflow with output_schema).
+    """
+    from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
+
+    self.mock_event.content = None
+    self.mock_event.output = {"summary": "done", "score": 3}
+
+    result = convert_event_to_a2a_message(
+        self.mock_event, self.mock_invocation_context
+    )
+
+    assert result is not None
+    assert len(result.parts) == 1
+    assert _compat.part_text(result.parts[0]) == json.dumps(
+        {"summary": "done", "score": 3}
+    )
+
+  def test_convert_event_to_a2a_message_output_pydantic_model(self):
+    """A pydantic ``output`` value is serialized via model_dump_json."""
+    from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
+
+    class _Result(BaseModel):
+      summary: str
+
+    self.mock_event.content = None
+    self.mock_event.output = _Result(summary="done")
+
+    result = convert_event_to_a2a_message(
+        self.mock_event, self.mock_invocation_context
+    )
+
+    assert result is not None
+    assert _compat.part_text(result.parts[0]) == '{"summary":"done"}'
+
+  def test_convert_event_to_a2a_message_no_content_no_output(self):
+    """Returns None when neither content nor output are present."""
+    from google.adk.a2a.converters.event_converter import convert_event_to_a2a_message
+
+    self.mock_event.content = None
+    self.mock_event.output = None
+
+    result = convert_event_to_a2a_message(
+        self.mock_event, self.mock_invocation_context
+    )
+
+    assert result is None
 
 
 class TestA2AToEventConverters:

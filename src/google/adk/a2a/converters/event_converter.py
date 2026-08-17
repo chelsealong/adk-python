@@ -382,6 +382,27 @@ def convert_a2a_message_to_event(
     raise RuntimeError(f"Failed to convert message: {e}") from e
 
 
+def _serialize_output_to_text(output: Any) -> Optional[str]:
+  """Serializes a node's structured ``output`` value to a JSON string.
+
+  Returns None if the output is empty or cannot be serialized.
+  """
+  if output is None:
+    return None
+  if hasattr(output, "model_dump_json"):
+    try:
+      return output.model_dump_json(exclude_none=True, by_alias=True)
+    except Exception as e:
+      logger.warning("Failed to serialize output model to JSON: %s", e)
+  if isinstance(output, str):
+    return output
+  try:
+    return json.dumps(output)
+  except (TypeError, ValueError) as e:
+    logger.warning("Failed to serialize output to JSON: %s", e)
+    return str(output)
+
+
 @a2a_experimental
 def convert_event_to_a2a_message(
     event: Event,
@@ -398,7 +419,8 @@ def convert_event_to_a2a_message(
     part_converter: The function to convert GenAI part to A2A part.
 
   Returns:
-    An A2A Message if the event has content, None otherwise.
+    An A2A Message if the event has content or a structured ``output``,
+    None otherwise.
 
   Raises:
     ValueError: If required parameters are invalid.
@@ -407,7 +429,17 @@ def convert_event_to_a2a_message(
     raise ValueError("Event cannot be None")
 
   if not event.content or not event.content.parts:
-    return None
+    # A workflow node's result may be carried on ``event.output`` instead of
+    # ``event.content`` (e.g. the terminal output of a Workflow). Fall back
+    # to it so the value is not silently dropped.
+    output_text = _serialize_output_to_text(getattr(event, "output", None))
+    if output_text is None:
+      return None
+    return Message(
+        message_id=platform_uuid.new_uuid(),
+        role=role,
+        parts=[_compat.make_text_part(output_text)],
+    )
 
   try:
     output_parts = []
