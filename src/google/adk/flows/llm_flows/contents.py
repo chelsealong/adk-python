@@ -144,15 +144,21 @@ def _rearrange_events_for_async_function_responses_in_history(
     events: list[Event],
 ) -> list[Event]:
   """Rearrange the async function_response events in the history."""
-  function_call_id_to_response_events_index: dict[str | None, int] = {}
+  # Keyed by (id, name) rather than id alone: model-supplied ids are not
+  # guaranteed unique (e.g. Vertex Gemini can reuse a "call_<n>" id within a
+  # session), and pairing on id alone can match a response to the wrong
+  # tool's call.
+  function_call_key_to_response_events_index: dict[
+      tuple[str | None, str | None], int
+  ] = {}
   for i, event in enumerate(events):
     function_responses = event.get_function_responses()
     if function_responses:
       for function_response in function_responses:
-        function_call_id = function_response.id
-        function_call_id_to_response_events_index[function_call_id] = i
+        key = (function_response.id, function_response.name)
+        function_call_key_to_response_events_index[key] = i
 
-  if not function_call_id_to_response_events_index:
+  if not function_call_key_to_response_events_index:
     return events
 
   result_events: list[Event] = []
@@ -164,10 +170,10 @@ def _rearrange_events_for_async_function_responses_in_history(
 
       function_response_events_indices = set()
       for function_call in event.get_function_calls():
-        function_call_id = function_call.id
-        if function_call_id in function_call_id_to_response_events_index:
+        key = (function_call.id, function_call.name)
+        if key in function_call_key_to_response_events_index:
           function_response_events_indices.add(
-              function_call_id_to_response_events_index[function_call_id]
+              function_call_key_to_response_events_index[key]
           )
       result_events.append(event)
       if not function_response_events_indices:

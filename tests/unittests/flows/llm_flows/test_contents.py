@@ -1964,6 +1964,88 @@ def test_rearrange_async_function_responses_early_returns_when_no_responses():
   assert result is events
 
 
+def test_rearrange_async_function_responses_disambiguates_reused_ids():
+  """A reused model-supplied id must not pair a call with another tool's response.
+
+  Vertex Gemini mints ``call_<n>`` ids from a small enough space that they can
+  repeat within a session. Pairing on id alone lets a later call's response
+  overwrite an earlier one's in the lookup, then attach to the wrong call.
+  Pairing on (id, name) keeps each call matched to its own tool's response.
+  """
+  reused_id = "call_807"
+  call_one = Event(
+      invocation_id="inv1",
+      author="test_agent",
+      timestamp=1.0,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=reused_id, name="site_security_posture", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  response_one = Event(
+      invocation_id="inv1",
+      author="user",
+      timestamp=2.0,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=reused_id,
+                      name="site_security_posture",
+                      response={"result": "posture-ok"},
+                  )
+              )
+          ],
+      ),
+  )
+  call_two = Event(
+      invocation_id="inv2",
+      author="test_agent",
+      timestamp=3.0,
+      content=types.Content(
+          role="model",
+          parts=[
+              types.Part(
+                  function_call=types.FunctionCall(
+                      id=reused_id, name="fleet_security_summary", args={}
+                  )
+              )
+          ],
+      ),
+  )
+  response_two = Event(
+      invocation_id="inv2",
+      author="user",
+      timestamp=4.0,
+      content=types.Content(
+          role="user",
+          parts=[
+              types.Part(
+                  function_response=types.FunctionResponse(
+                      id=reused_id,
+                      name="fleet_security_summary",
+                      response={"result": "fleet-ok"},
+                  )
+              )
+          ],
+      ),
+  )
+  events = [call_one, response_one, call_two, response_two]
+
+  result = contents._rearrange_events_for_async_function_responses_in_history(  # pylint: disable=protected-access
+      events
+  )
+
+  assert result == [call_one, response_one, call_two, response_two]
+
+
 def _long_running_call_event() -> Event:
   return Event(
       invocation_id="inv2",
