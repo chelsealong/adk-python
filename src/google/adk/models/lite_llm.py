@@ -2106,11 +2106,25 @@ def _function_declaration_to_tool_param(
   elif function_declaration.parameters_json_schema:
     parameters = function_declaration.parameters_json_schema
 
+  response_schema = None
+  if function_declaration.response is not None:
+    response_schema = _schema_to_dict(function_declaration.response)
+  elif function_declaration.response_json_schema:
+    response_schema = function_declaration.response_json_schema
+
+  description = function_declaration.description or ""
+  if response_schema:
+    # Most OpenAI-compatible providers have no dedicated field for a tool's
+    # result schema, so it is rendered into the description instead.
+    description = (
+        f"{description}\n\nOutput schema: {json.dumps(response_schema)}"
+    ).strip()
+
   tool_params: dict[str, Any] = {
       "type": "function",
       "function": {
           "name": function_declaration.name,
-          "description": function_declaration.description or "",
+          "description": description,
           "parameters": parameters,
       },
   }

@@ -1711,6 +1711,51 @@ def test_function_declaration_to_tool_param_with_parameters_json_schema():
   assert _function_declaration_to_tool_param(func_decl) == expected
 
 
+def test_function_declaration_to_tool_param_with_response_json_schema():
+  """response_json_schema should be forwarded via the tool description.
+
+  Most OpenAI-compatible providers have no dedicated field for a tool's
+  result schema, so ADK renders it into the description instead of
+  silently dropping it.
+  """
+
+  output_schema = {
+      "type": "object",
+      "required": ["status"],
+      "properties": {"status": {"type": "string"}},
+  }
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_output_schema",
+      description="desc",
+      parameters_json_schema={"type": "object", "properties": {}},
+      response_json_schema=output_schema,
+  )
+
+  result = _function_declaration_to_tool_param(func_decl)
+
+  assert result["function"]["description"] == (
+      f"desc\n\nOutput schema: {json.dumps(output_schema)}"
+  )
+
+
+def test_function_declaration_to_tool_param_with_response_schema():
+  """A `response` Schema object should also be forwarded via the description."""
+
+  func_decl = types.FunctionDeclaration(
+      name="fn_with_response",
+      description="desc",
+      response=types.Schema(
+          type=types.Type.OBJECT,
+          properties={"status": types.Schema(type=types.Type.STRING)},
+      ),
+  )
+
+  result = _function_declaration_to_tool_param(func_decl)
+
+  assert "Output schema:" in result["function"]["description"]
+  assert '"status"' in result["function"]["description"]
+
+
 @pytest.mark.asyncio
 async def test_generate_content_async_with_system_instruction(
     lite_llm_instance, mock_acompletion
