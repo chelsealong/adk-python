@@ -639,7 +639,13 @@ class DatabaseSessionService(BaseSessionService):
           storage_app_state.state, storage_user_state.state, session_state
       )
       # Call to_session before commit to avoid post-commit lazy-load.
-      await sql_session.flush()
+      try:
+        await sql_session.flush()
+      except IntegrityError as e:
+        # A concurrent request created a session with the same id first.
+        raise AlreadyExistsError(
+            f"Session with id {session_id} already exists."
+        ) from e
       session = storage_session.to_session(
           state=merged_state, is_sqlite=is_sqlite, is_postgresql=is_postgresql
       )

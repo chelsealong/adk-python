@@ -743,6 +743,51 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
+async def test_create_session_concurrent_same_id_raises_already_exists():
+  """A racing duplicate-id create must raise AlreadyExistsError, not IntegrityError.
+
+  DatabaseSessionService.create_session first checks for an existing row
+  with `sql_session.get`, then inserts. Two concurrent callers can both pass
+  that check before either commits; the loser's insert then fails the
+  primary-key constraint at the database level. Only DatabaseSessionService
+  reproduces this, since the check-then-act window is a real database
+  round-trip; InMemorySessionService and SqliteSessionService's SAVEPOINT
+  based dict operations do not race the same way here.
+  """
+  service = DatabaseSessionService('sqlite+aiosqlite:///:memory:')
+  try:
+    await service.prepare_tables()
+
+    # Winner: create the session first so a same-id row already exists.
+    await service.create_session(
+        app_name='app1', user_id='u1', session_id='dup_session'
+    )
+
+    # Loser: simulate the race window by making the duplicate-id check
+    # miss the winner's row on its first call only, then delegate to the
+    # real lookup for every other call the request makes.
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    original_get = AsyncSession.get
+    call_count = 0
+
+    async def patched_get(self, *args, **kwargs):
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return None
+      return await original_get(self, *args, **kwargs)
+
+    with mock.patch.object(AsyncSession, 'get', patched_get):
+      with pytest.raises(AlreadyExistsError):
+        await service.create_session(
+            app_name='app1', user_id='u1', session_id='dup_session'
+        )
+  finally:
+    await service.close()
+
+
+@pytest.mark.asyncio
 async def test_append_event_bytes(session_service):
   app_name = 'my_app'
   user_id = 'user'
