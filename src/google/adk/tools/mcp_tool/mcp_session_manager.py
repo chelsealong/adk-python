@@ -67,6 +67,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import create_mcp_http_client as _create_mcp_http_client
 from mcp.client.streamable_http import McpHttpClientFactory
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import McpError
 from pydantic import BaseModel
 from pydantic import ConfigDict
 
@@ -194,6 +195,20 @@ def _has_cancelled_error_context(exc: BaseException) -> bool:
     if current.__context__ is not None:
       queue.append(current.__context__)
   return False
+
+
+def is_session_terminated_error(exc: BaseException) -> bool:
+  """True if `exc` is the streamable-HTTP transport's server-termination signal.
+
+  `mcp.client.streamable_http` turns a server-side 404 (idle session
+  eviction, server restart) into `McpError(ErrorData(message="Session
+  terminated"))` delivered over the request's own read stream. The local
+  streams stay open and the background task stays alive, so neither
+  `_is_session_disconnected` nor a task-aliveness check sees it -- the
+  pooled session looks healthy and would otherwise be reused and fail the
+  same way forever.
+  """
+  return isinstance(exc, McpError) and exc.error.message == 'Session terminated'
 
 
 class StdioConnectionParams(BaseModel):
@@ -1005,6 +1020,33 @@ class MCPSessionManager:
       # Forget the entry before spawning the teardown, so a later caller that
       # reuses this key gets a fresh session and the in-flight teardown never
       # reaches into the pool to drop it.
+      self._forget_session(session_key)
+      task = asyncio.ensure_future(
+          self._close_exit_stack(session_key, exit_stack, stored_loop)
+      )
+      self._eviction_tasks.add(task)
+      task.add_done_callback(self._eviction_tasks.discard)
+
+  async def invalidate_session(
+      self, headers: Optional[Dict[str, str]] = None
+  ) -> None:
+    """Evicts the pooled session for `headers`, if any.
+
+    Use this when a caller learns by some other means (e.g.
+    `is_session_terminated_error`) that a pooled session is dead, so the
+    next `create_session` call builds a fresh one instead of reusing it.
+
+    Args:
+        headers: The headers the caller passed to `create_session`.
+    """
+    merged_headers = self._merge_headers(headers)
+    session_key = self._generate_session_key(merged_headers)
+    async with self._session_lock:
+      entry = self._sessions.get(session_key)
+      if entry is None:
+        return
+      logger.info('Invalidating MCP session: %s', session_key)
+      _, exit_stack, stored_loop = entry
       self._forget_session(session_key)
       task = asyncio.ensure_future(
           self._close_exit_stack(session_key, exit_stack, stored_loop)

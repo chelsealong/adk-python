@@ -58,6 +58,7 @@ from ..base_authenticated_tool import BaseAuthenticatedTool
 from ..tool_context import ToolContext
 from ..transfer_to_agent_tool import transfer_to_agent
 from .mcp_session_manager import _http_debug_var
+from .mcp_session_manager import is_session_terminated_error
 from .mcp_session_manager import MCPSessionManager
 from .mcp_session_manager import retry_on_errors
 from .session_context import SessionContext
@@ -461,52 +462,76 @@ class McpTool(BaseAuthenticatedTool):
     propagate.get_global_textmap().inject(carrier=trace_carrier)
     meta_trace_context = trace_carrier if trace_carrier else None
 
-    # Get the session from the session manager
-    session = await self._create_session(headers=final_headers)
-
     # Resolve progress callback (may be a factory that needs runtime context)
     resolved_callback = self._resolve_progress_callback(tool_context)
 
-    call_coro = session.call_tool(
-        self._mcp_tool.name,
-        arguments=args,
-        progress_callback=resolved_callback,
-        meta=meta_trace_context,
-    )
+    # A server-side session termination (idle eviction, restart) arrives as
+    # an McpError over the still-open read stream, so the pool has no other
+    # signal that the session is dead and would keep handing it out forever.
+    # Retried at most once, against a freshly created session: the server
+    # answered the original request with a 404 rather than executing it, so
+    # replaying it is not a duplicate side effect.
+    for attempt in range(2):
+      # Get the session from the session manager
+      session = await self._create_session(headers=final_headers)
 
-    # Hold the session out of the pool's idle sweep for as long as the call
-    # runs. A tool call can easily outlive the idle TTL, and a session that
-    # only looks idle because its call has not come back yet must not have
-    # its transport closed underneath it.
-    self._mcp_session_manager._begin_session_use(final_headers)  # pylint: disable=protected-access
-    try:
-      if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
-        # Race the tool call against the background session task so that
-        # transport crashes (e.g. non-2xx HTTP responses from an AGW with
-        # Model Armor) surface immediately instead of hanging until
-        # sse_read_timeout (default 5 minutes) expires. ConnectionError is
-        # intentionally NOT caught here. Replaying a tool call after an
-        # ambiguous transport failure could duplicate a remote side effect, so
-        # the failure surfaces to the run_async wrapper without an automatic
-        # retry.
-        #
-        # The isinstance check is intentional: tests and external subclasses
-        # may inject mock session managers whose `_get_session_context`
-        # returns a Mock instead of a real SessionContext (or None). Falling
-        # back to the direct await keeps those callers working.
-        session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
-            headers=final_headers
-        )
-        if isinstance(session_context, SessionContext):
-          response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+      call_coro = session.call_tool(
+          self._mcp_tool.name,
+          arguments=args,
+          progress_callback=resolved_callback,
+          meta=meta_trace_context,
+      )
+
+      # Hold the session out of the pool's idle sweep for as long as the call
+      # runs. A tool call can easily outlive the idle TTL, and a session that
+      # only looks idle because its call has not come back yet must not have
+      # its transport closed underneath it.
+      self._mcp_session_manager._begin_session_use(final_headers)  # pylint: disable=protected-access
+      try:
+        if is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING):  # pylint: disable=protected-access
+          # Race the tool call against the background session task so that
+          # transport crashes (e.g. non-2xx HTTP responses from an AGW with
+          # Model Armor) surface immediately instead of hanging until
+          # sse_read_timeout (default 5 minutes) expires. ConnectionError is
+          # intentionally NOT caught here. Replaying a tool call after an
+          # ambiguous transport failure could duplicate a remote side effect, so
+          # the failure surfaces to the run_async wrapper without an automatic
+          # retry.
+          #
+          # The isinstance check is intentional: tests and external subclasses
+          # may inject mock session managers whose `_get_session_context`
+          # returns a Mock instead of a real SessionContext (or None). Falling
+          # back to the direct await keeps those callers working.
+          session_context = self._mcp_session_manager._get_session_context(  # pylint: disable=protected-access
+              headers=final_headers
+          )
+          if isinstance(session_context, SessionContext):
+            response = await session_context._run_guarded(call_coro)  # pylint: disable=protected-access
+          else:
+            response = await call_coro
         else:
+          # Pre-fix behavior: await the call directly. This is what causes the
+          # ~300s hang when the underlying transport crashes.
           response = await call_coro
-      else:
-        # Pre-fix behavior: await the call directly. This is what causes the
-        # ~300s hang when the underlying transport crashes.
-        response = await call_coro
-    finally:
-      self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
+        break
+      except McpError as e:
+        if (
+            attempt == 0
+            and is_feature_enabled(FeatureName._MCP_GRACEFUL_ERROR_HANDLING)  # pylint: disable=protected-access
+            and is_session_terminated_error(e)
+        ):
+          logger.info(
+              "MCP session reported terminated by the server; recreating"
+              " and retrying %s once.",
+              self._mcp_tool.name,
+          )
+          await self._mcp_session_manager.invalidate_session(
+              headers=final_headers
+          )
+          continue
+        raise
+      finally:
+        self._mcp_session_manager._end_session_use(final_headers)  # pylint: disable=protected-access
 
     result = response.model_dump(exclude_none=True, mode="json")
 

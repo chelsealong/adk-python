@@ -890,6 +890,54 @@ class TestMCPTool:
     self.mock_session.call_tool.assert_awaited_once()
 
   @pytest.mark.asyncio
+  async def test_run_async_impl_recreates_session_on_session_terminated_error(
+      self,
+  ):
+    """A server-terminated pooled session (404 -> "Session terminated") must
+    be evicted and the call retried once against a fresh session, instead of
+    being reused and failing identically forever."""
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+
+    dead_session = AsyncMock()
+    dead_session.call_tool = AsyncMock(
+        side_effect=McpError(
+            ErrorData(code=32600, message="Session terminated")
+        )
+    )
+    healthy_session = AsyncMock()
+    mcp_response = CallToolResult(content=[TextContent(type="text", text="ok")])
+    healthy_session.call_tool = AsyncMock(return_value=mcp_response)
+
+    self.mock_session_manager.create_session = AsyncMock(
+        side_effect=[dead_session, healthy_session]
+    )
+    self.mock_session_manager.invalidate_session = AsyncMock()
+
+    tool = MCPTool(
+        mcp_tool=self.mock_mcp_tool,
+        mcp_session_manager=self.mock_session_manager,
+    )
+    tool_context = ToolContext(invocation_context=Mock())
+
+    with temporary_feature_override(
+        FeatureName._MCP_GRACEFUL_ERROR_HANDLING, True
+    ):
+      result = await tool._run_async_impl(
+          args={"param1": "test_value"},
+          tool_context=tool_context,
+          credential=None,
+      )
+
+    assert result == mcp_response.model_dump(exclude_none=True, mode="json")
+    assert self.mock_session_manager.create_session.await_count == 2
+    self.mock_session_manager.invalidate_session.assert_awaited_once_with(
+        headers=None
+    )
+    dead_session.call_tool.assert_awaited_once()
+    healthy_session.call_tool.assert_awaited_once()
+
+  @pytest.mark.asyncio
   async def test_get_headers_http_custom_scheme(self):
     """Test header generation for custom HTTP scheme."""
     tool = MCPTool(
