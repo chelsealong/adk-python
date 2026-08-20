@@ -772,6 +772,9 @@ class _StreamState:
   """
 
   parts: list[types.Part] = dataclasses.field(default_factory=list)
+  function_call_parts_by_index: dict[int, types.Part] = dataclasses.field(
+      default_factory=dict
+  )
   web_search_queries: list[str] = dataclasses.field(default_factory=list)
   grounding_chunks: list[types.GroundingChunk] = dataclasses.field(
       default_factory=list
@@ -837,22 +840,29 @@ def _handle_media(
 
 
 def _handle_arguments_delta(
-    delta: StepDeltaData, state: _StreamState, interaction_id: str | None
+    delta: StepDeltaData,
+    state: _StreamState,
+    interaction_id: str | None,
+    index: int | None = None,
 ) -> LlmResponse | None:
-  if not state.parts:
-    return None
-  last_part = state.parts[-1]
-  if not last_part.function_call:
+  target_part = None
+  if index is not None:
+    target_part = state.function_call_parts_by_index.get(index)
+  if target_part is None:
+    if not state.parts:
+      return None
+    target_part = state.parts[-1]
+  if not target_part.function_call:
     return None
   delta_args = delta.arguments
-  if delta_args is None or last_part.function_call.partial_args is None:
+  if delta_args is None or target_part.function_call.partial_args is None:
     return None
-  last_part.function_call.partial_args.append(
+  target_part.function_call.partial_args.append(
       types.PartialArg(string_value=delta_args)
   )
   chunk_part = types.Part(
       function_call=types.FunctionCall(
-          name=last_part.function_call.name,
+          name=target_part.function_call.name,
           partial_args=[types.PartialArg(string_value=delta_args)],
       )
   )
@@ -1066,6 +1076,7 @@ def convert_interaction_event_to_llm_response(
       )
       part = types.Part(function_call=fc)
       state.parts.append(part)
+      state.function_call_parts_by_index[event.index] = part
 
       return LlmResponse(
           content=types.Content(role='model', parts=[part]),
@@ -1087,7 +1098,7 @@ def convert_interaction_event_to_llm_response(
     elif delta_type in ('image', 'audio', 'video', 'document'):
       return _handle_media(delta, state, interaction_id)
     elif delta_type == 'arguments_delta':
-      return _handle_arguments_delta(delta, state, interaction_id)
+      return _handle_arguments_delta(delta, state, interaction_id, event.index)
     elif delta_type == 'code_execution_call':
       return _handle_code_execution_call(delta, state, interaction_id)
     elif delta_type == 'code_execution_result':
@@ -1104,8 +1115,11 @@ def convert_interaction_event_to_llm_response(
       return _handle_unknown_delta(delta, state, interaction_id)
 
   elif isinstance(event, StepStop):
-    if state.parts and state.parts[-1].function_call:
-      fc = state.parts[-1].function_call
+    target_part = state.function_call_parts_by_index.get(event.index)
+    if target_part is None and state.parts:
+      target_part = state.parts[-1]
+    if target_part is not None and target_part.function_call:
+      fc = target_part.function_call
       if fc.partial_args is not None:
         arg_str = ''.join(pa.string_value or '' for pa in fc.partial_args)
 

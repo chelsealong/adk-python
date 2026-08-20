@@ -2074,6 +2074,66 @@ class TestConvertInteractionEventToLlmResponse:
     # The logging check can remain to ensure the raw exception is still logged.
     assert 'Failed to parse function call args' in caplog.text
 
+  def test_interleaved_function_call_streaming_routes_by_index(self):
+    """Deltas for one step must not leak into a different, later-started step."""
+    state = interactions_utils._StreamState()
+
+    # Step 0 and step 1 both start before either receives argument deltas.
+    for index, call_id, name in (
+        (0, 'call_0', 'get_weather'),
+        (1, 'call_1', 'get_time'),
+    ):
+      interactions_utils.convert_interaction_event_to_llm_response(
+          StepStart(
+              event_type='step.start',
+              index=index,
+              step=FunctionCallStep(
+                  type='function_call', id=call_id, name=name, arguments={}
+              ),
+          ),
+          state,
+          interaction_id='int_interleaved',
+      )
+
+    # Deltas arrive out of start order: step 1 first, then step 0.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=1,
+            delta={'type': 'arguments_delta', 'arguments': '{"tz": "UTC"}'},
+        ),
+        state,
+        interaction_id='int_interleaved',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepDelta(
+            event_type='step.delta',
+            index=0,
+            delta={'type': 'arguments_delta', 'arguments': '{"city": "Paris"}'},
+        ),
+        state,
+        interaction_id='int_interleaved',
+    )
+
+    # Stops also arrive out of start order.
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=1),
+        state,
+        interaction_id='int_interleaved',
+    )
+    interactions_utils.convert_interaction_event_to_llm_response(
+        StepStop(event_type='step.stop', index=0),
+        state,
+        interaction_id='int_interleaved',
+    )
+
+    fc0 = state.parts[0].function_call
+    fc1 = state.parts[1].function_call
+    assert fc0.name == 'get_weather'
+    assert fc0.args == {'city': 'Paris'}
+    assert fc1.name == 'get_time'
+    assert fc1.args == {'tz': 'UTC'}
+
 
 @pytest.mark.parametrize(
     ('streamed_events_factory', 'expected_ids'),
