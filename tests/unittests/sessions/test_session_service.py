@@ -1197,6 +1197,43 @@ async def test_create_session_with_existing_id_raises_error(session_service):
 
 
 @pytest.mark.asyncio
+async def test_in_memory_create_session_with_whitespace_padded_id_raises_error():
+  # InMemorySessionService.create_session() used to check for a duplicate id
+  # against the raw, caller-supplied id and only trim it afterwards, so a
+  # whitespace-padded id silently overwrote an existing session instead of
+  # raising AlreadyExistsError. This is specific to InMemorySessionService;
+  # SqliteSessionService already trims before checking.
+  service = InMemorySessionService()
+  app_name = 'my_app'
+  user_id = 'test_user'
+  session_id = 'existing_session'
+
+  session = await service.create_session(
+      app_name=app_name,
+      user_id=user_id,
+      session_id=session_id,
+      state={'cart': ['book']},
+  )
+  await service.append_event(
+      session, Event(invocation_id='inv1', author='user')
+  )
+
+  with pytest.raises(AlreadyExistsError):
+    await service.create_session(
+        app_name=app_name,
+        user_id=user_id,
+        session_id=f'  {session_id}\n',
+        state={'cart': []},
+    )
+
+  unchanged = await service.get_session(
+      app_name=app_name, user_id=user_id, session_id=session_id
+  )
+  assert len(unchanged.events) == 1
+  assert unchanged.state['cart'] == ['book']
+
+
+@pytest.mark.asyncio
 async def test_append_event_bytes(session_service):
   app_name = 'my_app'
   user_id = 'user'
