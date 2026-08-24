@@ -61,9 +61,11 @@ def _get_function_fields(
   sig = inspect.signature(func)
   fields: dict[str, tuple[type[Any], Any]] = {}
 
-  # Get type hints with forward reference resolution
+  # Get type hints with forward reference resolution. `include_extras=True`
+  # preserves `Annotated` metadata (e.g. `pydantic.Field(description=...)`)
+  # so per-parameter descriptions and constraints reach the generated schema.
   try:
-    type_hints = get_type_hints(func)
+    type_hints = get_type_hints(func, include_extras=True)
   except TypeError:
     # Can happen with mock objects or complex annotations
     type_hints = {}

@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 import dataclasses
 from enum import Enum
+from typing import Annotated
 from typing import Any
 from typing import AsyncGenerator
 from typing import Generator
@@ -784,6 +785,32 @@ class TestSpecialCases(parameterized.TestCase):
             "type": "integer",
         },
     )
+
+
+class TestAnnotatedFieldMetadata(parameterized.TestCase):
+  """Tests that Annotated[T, Field(...)] metadata reaches the schema."""
+
+  def test_annotated_description_and_constraints_preserved(self):
+    """Field description and constraints inside Annotated must survive."""
+
+    def get_forecast(
+        city_id: Annotated[str, Field(description="The city UUID")],
+        days: Annotated[int, Field(description="Number of days", ge=1, le=14)],
+    ) -> str:
+      """Get a multi-day weather forecast."""
+      return ""
+
+    decl = build_function_declaration_with_json_schema(get_forecast)
+    schema = decl.parameters_json_schema
+
+    self.assertEqual(
+        schema["properties"]["city_id"]["description"], "The city UUID"
+    )
+    self.assertEqual(
+        schema["properties"]["days"]["description"], "Number of days"
+    )
+    self.assertEqual(schema["properties"]["days"]["minimum"], 1)
+    self.assertEqual(schema["properties"]["days"]["maximum"], 14)
 
 
 class TestComplexFunction(parameterized.TestCase):
