@@ -3069,10 +3069,14 @@ class LiteLlm(BaseLlm):
   @property
   @override
   def capabilities(self) -> LlmCapabilities:
-    # LiteLLM reconciles tools + response_format per provider: providers with
-    # native support get both passed through, and the rest are converted to a
-    # json tool call with tool_choice enforcement.
-    return LlmCapabilities(output_schema_and_tools=True)
+    # LiteLLM fronts arbitrary providers, and not all of them can honour a
+    # response_schema and tool declarations in the same request; some pass
+    # both through untouched, and the model then has to satisfy two
+    # constraints at once, which it isn't guaranteed to do. LiteLlm can't
+    # promise the capability on a wrapped provider's behalf, so it declares
+    # it unsupported and lets ADK's SetModelResponseTool fallback engage,
+    # the same way an unrecognized model would.
+    return LlmCapabilities(output_schema_and_tools=False)
 
   async def generate_content_async(
       self, llm_request: LlmRequest, stream: bool = False
