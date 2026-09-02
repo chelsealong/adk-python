@@ -99,6 +99,29 @@ class TestToAdk:
     with pytest.raises(ValueError, match="A2A message cannot be None"):
       convert_a2a_message_to_event(None)
 
+  def test_convert_a2a_message_to_event_long_running_tool_ids(self):
+    """The recovered long-running ids must reach the returned Event."""
+    a2a_part = _make_a2a_part_for_test({
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
+    })
+    message = Message(
+        message_id="msg-1", role=_compat.ROLE_USER, parts=[a2a_part]
+    )
+
+    mock_genai_part = genai_types.Part(
+        function_call=genai_types.FunctionCall(name="wait", id="call-1")
+    )
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_message_to_event(
+        message,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.long_running_tool_ids == {"call-1"}
+
   def test_convert_a2a_message_to_event_restores_actions_from_metadata(self):
     """Test A2A message conversion restores ADK actions metadata."""
     a2a_part = _make_a2a_part_for_test({})
@@ -731,6 +754,35 @@ class TestToAdk:
     """Test convert_a2a_artifact_update_to_event with None."""
     with pytest.raises(ValueError, match="A2A artifact update cannot be None"):
       convert_a2a_artifact_update_to_event(None)
+
+  def test_convert_a2a_artifact_update_to_event_long_running_tool_ids(self):
+    """The recovered long-running ids must reach the returned Event."""
+    a2a_part = _make_a2a_part_for_test({
+        _get_adk_metadata_key(A2A_DATA_PART_METADATA_IS_LONG_RUNNING_KEY): True
+    })
+    update = TaskArtifactUpdateEvent(
+        task_id="task-1",
+        artifact=_compat.make_artifact(
+            artifact_id="art-1", artifact_type="message", parts=[a2a_part]
+        ),
+        append=True,
+        context_id="context-1",
+        last_chunk=False,
+    )
+
+    mock_genai_part = genai_types.Part(
+        function_call=genai_types.FunctionCall(name="wait", id="call-1")
+    )
+    mock_part_converter = Mock(return_value=[mock_genai_part])
+
+    event = convert_a2a_artifact_update_to_event(
+        update,
+        author="test-author",
+        invocation_context=self.mock_context,
+        part_converter=mock_part_converter,
+    )
+
+    assert event.long_running_tool_ids == {"call-1"}
 
   def test_convert_a2a_message_to_event_user_role(self) -> None:
     """Test that A2A user role maps to GenAI content role 'user'."""
