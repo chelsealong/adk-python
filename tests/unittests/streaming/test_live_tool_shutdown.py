@@ -276,6 +276,113 @@ async def test_streaming_tool_stops_when_its_agent_hands_off():
 
 
 @pytest.mark.asyncio
+async def test_background_tool_response_withheld_during_transfer_delay(
+    monkeypatch: pytest.MonkeyPatch,
+):
+  """A parent's background tool must not reach the model during the delay.
+
+  ``run_live`` sleeps for ``DEFAULT_TRANSFER_AGENT_DELAY`` after a transfer
+  event before it cancels the send task and closes the connection. A
+  non-blocking tool of the parent agent that finishes inside that window must
+  not have its function response forwarded to the connection: the sub agent
+  has already taken over, so nothing the parent's tools produce after the
+  handoff belongs to the model that would receive it.
+  """
+  monkeypatch.setattr(base_llm_flow, 'DEFAULT_TRANSFER_AGENT_DELAY', 0.1)
+
+  sent_contents: list[types.Content] = []
+
+  async def _record_send_content(self, content: types.Content) -> None:
+    sent_contents.append(content)
+
+  monkeypatch.setattr(
+      testing_utils.MockLlmConnection, 'send_content', _record_send_content
+  )
+
+  started = asyncio.Event()
+  sub_agent_ran = asyncio.Event()
+
+  async def slow_lookup() -> str:
+    started.set()
+    await asyncio.sleep(0.02)
+    return 'late result'
+
+  def report() -> str:
+    sub_agent_ran.set()
+    return 'reported'
+
+  scheduled = FunctionTool(func=slow_lookup)
+  scheduled.response_scheduling = types.FunctionResponseScheduling.SILENT
+
+  sub_agent = Agent(
+      name='sub_agent',
+      model=testing_utils.MockModel.create([_call('report')]),
+      tools=[report],
+  )
+  root_agent = Agent(
+      name='root_agent',
+      model=testing_utils.MockModel.create([
+          _call('slow_lookup'),
+          LlmResponse(
+              content=types.Content(
+                  role='model',
+                  parts=[
+                      types.Part.from_function_call(
+                          name='transfer_to_agent',
+                          args={'agent_name': 'sub_agent'},
+                      )
+                  ],
+              ),
+              turn_complete=False,
+          ),
+      ]),
+      tools=[scheduled],
+      sub_agents=[sub_agent],
+  )
+
+  session_service = InMemorySessionService()
+  session = await session_service.create_session(app_name='app', user_id='u')
+  runner = Runner(
+      app_name='app', agent=root_agent, session_service=session_service
+  )
+  live_request_queue = LiveRequestQueue()
+  live_request_queue.send_realtime(
+      types.Blob(data=b'question', mime_type='audio/pcm')
+  )
+
+  async def _consume() -> None:
+    async with aclosing(
+        runner.run_live(
+            user_id='u',
+            session_id=session.id,
+            live_request_queue=live_request_queue,
+            run_config=RunConfig(response_modalities=['TEXT']),
+        )
+    ) as agen:
+      seen = 0
+      async for _ in agen:
+        seen += 1
+        if sub_agent_ran.is_set() or seen >= _MAX_EVENTS:
+          return
+
+  try:
+    await asyncio.wait_for(_consume(), timeout=10.0)
+  except asyncio.TimeoutError:
+    pass
+
+  # Let the background tool finish and try to enqueue its response, even
+  # though it should have been cancelled well before this point.
+  await asyncio.sleep(0.05)
+
+  assert started.is_set(), 'the background tool never started'
+  assert not any(
+      part.function_response and part.function_response.name == 'slow_lookup'
+      for content in sent_contents
+      for part in content.parts or []
+  ), 'the background tool response from the parent reached the connection'
+
+
+@pytest.mark.asyncio
 async def test_handoff_stops_feeding_the_stopped_tools_stream():
   """A stopped tool's stream is dropped, not left collecting live input.
 
