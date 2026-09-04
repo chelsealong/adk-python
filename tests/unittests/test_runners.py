@@ -1240,6 +1240,39 @@ class TestRunnerWithPlugins:
     assert events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
 
   @pytest.mark.asyncio
+  async def test_runner_runs_event_callback_for_early_exit_event_legacy_base_agent(
+      self,
+  ):
+    """Same as above, but for a root agent that is a plain BaseAgent (not an
+    LlmAgent), which is routed through Runner._exec_with_plugin instead of
+    the node-runtime path."""
+    self.plugin.enable_early_exit = True
+    self.plugin.enable_event_callback = True
+    runner = Runner(
+        app_name="test_app",
+        agent=MockAgent("test_agent"),
+        session_service=self.session_service,
+        artifact_service=self.artifact_service,
+        plugins=[self.plugin],
+    )
+    await self.session_service.create_session(
+        app_name=TEST_APP_ID, user_id=TEST_USER_ID, session_id=TEST_SESSION_ID
+    )
+    events = []
+    async for event in runner.run_async(
+        user_id=TEST_USER_ID,
+        session_id=TEST_SESSION_ID,
+        new_message=types.Content(
+            role="user", parts=[types.Part(text="Hello")]
+        ),
+    ):
+      events.append(event)
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == MockPlugin.ON_EVENT_CALLBACK_MSG
+    assert events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+
+  @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):
     """Test that runner.close() calls plugin manager close."""
     # Mock the plugin manager's close method
