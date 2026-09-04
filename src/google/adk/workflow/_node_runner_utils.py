@@ -188,14 +188,25 @@ async def run_node_async(
                 content=early_exit_result,
             )
             _apply_run_config_custom_metadata(early_exit_event, ic.run_config)
+            # Run the on_event callbacks so plugins observe the early-exit
+            # event the same way they observe events from the main execution
+            # loop.
+            modified_event = await ic.plugin_manager.run_on_event_callback(
+                invocation_context=ic, event=early_exit_event
+            )
+            output_event = runner._get_output_event(  # pylint: disable=protected-access
+                original_event=early_exit_event,
+                modified_event=modified_event,
+                run_config=ic.run_config,
+            )
             if runner._should_append_event(  # pylint: disable=protected-access
                 early_exit_event, is_live_call=False
             ):
               await runner.session_service.append_event(
                   session=ic.session,
-                  event=early_exit_event,
+                  event=output_event,
               )
-            yield early_exit_event
+            yield output_event
           else:
             # 3. Start root node in background
             root_ctx = Context(ic)

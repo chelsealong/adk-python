@@ -1381,12 +1381,22 @@ class Runner:
         _apply_run_config_custom_metadata(
             early_exit_event, invocation_context.run_config
         )
+        # Run the on_event callbacks so plugins observe the early-exit event
+        # the same way they observe events from the main execution loop.
+        modified_event = await plugin_manager.run_on_event_callback(
+            invocation_context=invocation_context, event=early_exit_event
+        )
+        output_event = self._get_output_event(
+            original_event=early_exit_event,
+            modified_event=modified_event,
+            run_config=invocation_context.run_config,
+        )
         if self._should_append_event(early_exit_event, is_live_call):
           await self.session_service.append_event(
               session=invocation_context.session,
-              event=early_exit_event,
+              event=output_event,
           )
-        yield early_exit_event
+        yield output_event
       else:
         # Step 2: Otherwise continue with normal execution
         async with aclosing(execute_fn(invocation_context)) as agen:

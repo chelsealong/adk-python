@@ -158,10 +158,13 @@ class MockPlugin(BasePlugin):
   ON_EVENT_CALLBACK_MSG = "Modified event ON_EVENT_CALLBACK_MSG from MockPlugin"
   ON_EVENT_CALLBACK_METADATA = {"plugin_key": "plugin_value"}
 
+  EARLY_EXIT_MSG = "Blocked by before_run"
+
   def __init__(self):
     super().__init__(name="mock_plugin")
     self.enable_user_message_callback = False
     self.enable_event_callback = False
+    self.enable_early_exit = False
     self.user_content_seen_in_before_run_callback = None
 
   async def on_user_message_callback(
@@ -181,9 +184,15 @@ class MockPlugin(BasePlugin):
       self,
       *,
       invocation_context: InvocationContext,
-  ) -> None:
+  ) -> Optional[types.Content]:
     self.user_content_seen_in_before_run_callback = (
         invocation_context.user_content
+    )
+    if not self.enable_early_exit:
+      return None
+    return types.Content(
+        role="model",
+        parts=[types.Part(text=self.EARLY_EXIT_MSG)],
     )
 
   async def on_event_callback(
@@ -1216,6 +1225,20 @@ class TestRunnerWithPlugins:
     )
     assert (
         persisted_event.custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
+    )
+
+  @pytest.mark.asyncio
+  async def test_runner_runs_event_callback_for_early_exit_event(self):
+    """on_event_callback should also observe before_run early-exit events."""
+    self.plugin.enable_early_exit = True
+    self.plugin.enable_event_callback = True
+
+    events = await self.run_test()
+
+    assert len(events) == 1
+    assert events[0].content.parts[0].text == MockPlugin.ON_EVENT_CALLBACK_MSG
+    assert (
+        events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
     )
 
   @pytest.mark.asyncio
