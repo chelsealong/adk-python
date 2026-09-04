@@ -1237,9 +1237,7 @@ class TestRunnerWithPlugins:
 
     assert len(events) == 1
     assert events[0].content.parts[0].text == MockPlugin.ON_EVENT_CALLBACK_MSG
-    assert (
-        events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
-    )
+    assert events[0].custom_metadata == MockPlugin.ON_EVENT_CALLBACK_METADATA
 
   @pytest.mark.asyncio
   async def test_runner_close_calls_plugin_close(self):
