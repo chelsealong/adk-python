@@ -1551,6 +1551,30 @@ async def test_save_artifact_rejects_traversal_in_session_id(
     [
         ArtifactServiceType.IN_MEMORY,
         ArtifactServiceType.GCS,
+    ],
+)
+async def test_save_artifact_rejects_reserved_user_session_id(
+    service_type, artifact_service_factory
+):
+  """session_id="user" collides with the reserved user-namespace segment."""
+  service = artifact_service_factory(service_type)
+  artifact = types.Part.from_bytes(data=b"data", mime_type="text/plain")
+  with pytest.raises(InputValidationError, match="reserved"):
+    await service.save_artifact(
+        app_name="myapp",
+        user_id="user123",
+        session_id="user",
+        filename="safe.txt",
+        artifact=artifact,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
         ArtifactServiceType.FILE,
     ],
 )
@@ -1749,6 +1773,27 @@ async def test_list_artifact_keys_rejects_traversal_in_session_id(
         app_name="myapp",
         user_id="user123",
         session_id=session_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_type",
+    [
+        ArtifactServiceType.IN_MEMORY,
+        ArtifactServiceType.GCS,
+    ],
+)
+async def test_list_artifact_keys_rejects_reserved_user_session_id(
+    service_type, artifact_service_factory
+):
+  """A session literally named "user" must be rejected outright."""
+  service = artifact_service_factory(service_type)
+  with pytest.raises(InputValidationError, match="reserved"):
+    await service.list_artifact_keys(
+        app_name="myapp",
+        user_id="user123",
+        session_id="user",
     )
 
 

@@ -96,6 +96,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
           "Session ID must be provided for session-scoped artifacts."
       )
     artifact_util.validate_path_segment(session_id, "session_id")
+    if session_id == "user":
+      raise InputValidationError(
+          "session_id must not be the reserved value 'user'."
+      )
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   @override
@@ -224,6 +228,10 @@ class InMemoryArtifactService(BaseArtifactService, BaseModel):
     artifact_util.validate_path_segment(user_id, "user_id")
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
+      if session_id == "user":
+        raise InputValidationError(
+            "session_id must not be the reserved value 'user'."
+        )
     usernamespace_prefix = f"{app_name}/{user_id}/user/"
     session_prefix = (
         f"{app_name}/{user_id}/{session_id}/" if session_id else None

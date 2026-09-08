@@ -218,6 +218,10 @@ class GcsArtifactService(BaseArtifactService):
           "Session ID must be provided for session-scoped artifacts."
       )
     artifact_util.validate_path_segment(session_id, "session_id")
+    if session_id == "user":
+      raise InputValidationError(
+          "session_id must not be the reserved value 'user'."
+      )
     return f"{app_name}/{user_id}/{session_id}/{filename}"
 
   def _get_blob_name(
@@ -419,6 +423,10 @@ class GcsArtifactService(BaseArtifactService):
     artifact_util.validate_path_segment(user_id, "user_id")
     if session_id is not None:
       artifact_util.validate_path_segment(session_id, "session_id")
+      if session_id == "user":
+        raise InputValidationError(
+            "session_id must not be the reserved value 'user'."
+        )
     filenames = set()
 
     if session_id:
