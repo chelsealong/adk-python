@@ -994,6 +994,16 @@ def adk_services_options(*, default_use_local_storage: bool = True):
     help="Optional. Initial state for the run as a JSON string.",
 )
 @click.option(
+    "--state_file",
+    type=click.Path(
+        exists=True, dir_okay=False, file_okay=True, resolve_path=True
+    ),
+    help=(
+        "Optional. Path to a JSON file containing the initial state for the"
+        " run. Mutually exclusive with --state."
+    ),
+)
+@click.option(
     "--timeout",
     type=str,
     help="Optional. Timeout for a single turn or query (e.g., 30s, 5m).",
@@ -1032,6 +1042,7 @@ def cli_run(
     replay: Optional[str],
     resume: Optional[str],
     state: Optional[str] = None,
+    state_file: Optional[str] = None,
     timeout: Optional[str] = None,
     in_memory: bool = False,
     jsonl: bool = False,
@@ -1053,6 +1064,14 @@ def cli_run(
     adk run path/to/my_agent "hello"
   """
   logs.log_to_tmp_folder(level=getattr(logging, log_level.upper()))
+
+  if state is not None and state_file is not None:
+    raise click.UsageError(
+        "Options 'state' and 'state_file' cannot be set together."
+    )
+  if state_file is not None:
+    with open(state_file, "r", encoding="utf-8") as f:
+      state = f.read()
 
   agent_parent_folder = os.path.dirname(agent)
   agent_folder_name = os.path.basename(agent)

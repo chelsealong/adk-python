@@ -647,6 +647,136 @@ def test_cli_run_interactive_with_state(
   assert called_kwargs.get("state_str") == '{"x": 1}'
 
 
+def test_cli_run_interactive_with_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` in interactive mode should read state from --state_file."""
+  # Arrange
+  agent_dir = tmp_path / "agent_interactive_state_file"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}')
+
+  mock_run_cli = mock.AsyncMock()
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "--state_file", str(state_file)],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_cli.called
+  called_kwargs = mock_run_cli.call_args.kwargs
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
+def test_cli_run_query_with_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` with a query should read state from --state_file."""
+  # Arrange
+  agent_dir = tmp_path / "agent_query_state_file"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}')
+
+  mock_run_once = mock.AsyncMock(return_value=0)
+  monkeypatch.setattr("google.adk.cli.cli.run_once_cli", mock_run_once)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      ["run", str(agent_dir), "hello", "--state_file", str(state_file)],
+  )
+
+  # Assert
+  assert result.exit_code == 0
+  assert mock_run_once.called
+  called_kwargs = mock_run_once.call_args.kwargs
+  assert called_kwargs.get("state_str") == '{"x": 1}'
+
+
+def test_cli_run_state_and_state_file_mutually_exclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` should reject --state and --state_file used together."""
+  # Arrange
+  agent_dir = tmp_path / "agent_state_conflict"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  state_file = tmp_path / "state.json"
+  state_file.write_text('{"x": 1}')
+
+  mock_run_cli = mock.AsyncMock()
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "--state",
+          '{"x": 1}',
+          "--state_file",
+          str(state_file),
+      ],
+  )
+
+  # Assert
+  assert result.exit_code != 0
+  assert "cannot be set together" in result.output
+  assert not mock_run_cli.called
+
+
+def test_cli_run_state_file_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """`adk run` should surface a Click error for a missing --state_file."""
+  # Arrange
+  agent_dir = tmp_path / "agent_missing_state_file"
+  agent_dir.mkdir()
+  (agent_dir / "__init__.py").touch()
+  (agent_dir / "agent.py").touch()
+
+  mock_run_cli = mock.AsyncMock()
+  monkeypatch.setattr("google.adk.cli.cli.run_cli", mock_run_cli)
+
+  runner = CliRunner()
+
+  # Act
+  result = runner.invoke(
+      cli_tools_click.main,
+      [
+          "run",
+          str(agent_dir),
+          "--state_file",
+          str(tmp_path / "does_not_exist.json"),
+      ],
+  )
+
+  # Assert
+  assert result.exit_code != 0
+  assert not mock_run_cli.called
+
+
 def test_cli_run_options_with_query(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
