@@ -81,6 +81,10 @@ class ApiParameter(BaseModel):
   # Kept optional: callers pass None, and model_post_init normalizes it to ''.
   description: str | None = ''
   py_name: str | None = ''
+  # OpenAPI 3 query parameter serialization instructions (RFC 6570-derived).
+  # None means "use the OpenAPI default for this parameter's schema type".
+  style: str | None = None
+  explode: bool | None = None
   # Both are derived in model_post_init; the None defaults are never observed.
   type_value: object = Field(default=None, init_var=False)
   type_hint: str | None = Field(default=None, init_var=False)
@@ -123,6 +127,8 @@ class ApiParameter(BaseModel):
         'param_schema': self.param_schema,
         'description': self.description,
         'py_name': self.py_name,
+        'style': self.style,
+        'explode': self.explode,
     }
 
   def __str__(self) -> str:

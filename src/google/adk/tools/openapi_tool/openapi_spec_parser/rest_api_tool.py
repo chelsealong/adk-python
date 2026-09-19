@@ -75,6 +75,61 @@ def snake_to_lower_camel(snake_case_string: str):
   ])
 
 
+_QUERY_ARRAY_DELIMITERS: Final[Dict[str, str]] = {
+    "spaceDelimited": " ",
+    "pipeDelimited": "|",
+}
+
+
+def _serialize_query_param(
+    original_name: str,
+    value: Any,
+    *,
+    style: Optional[str],
+    explode: Optional[bool],
+) -> Dict[str, Any]:
+  """Serializes one query parameter value per its OpenAPI 3 style/explode.
+
+  httpx sends a dict value as its Python ``repr()`` and a list value as a
+  repeated key, which only matches the OpenAPI default (``form``, exploded)
+  for arrays. This applies the remaining serialization rules from the spec:
+  object and non-default-array values are turned into one or more plain
+  string/list values keyed by the query parameter name(s) they should be
+  sent under.
+
+  Args:
+      original_name: The parameter's name as declared in the OpenAPI spec.
+      value: The value supplied by the caller.
+      style: The parameter's OpenAPI ``style``, or None for the default.
+      explode: The parameter's OpenAPI ``explode``, or None for the default.
+
+  Returns:
+      A dict of query key(s) to value(s) to merge into the request's query
+      parameters. Object parameters with ``style: deepObject`` or an
+      exploded ``style: form`` produce one entry per property rather than a
+      single entry for ``original_name``.
+  """
+  style = style or "form"
+  if explode is None:
+    explode = style == "form"
+
+  if isinstance(value, dict):
+    if style == "deepObject":
+      return {f"{original_name}[{k}]": v for k, v in value.items()}
+    if explode:
+      return dict(value)
+    joined = ",".join(f"{k},{v}" for k, v in value.items())
+    return {original_name: joined}
+
+  if isinstance(value, (list, tuple)):
+    if explode:
+      return {original_name: list(value)}
+    delimiter = _QUERY_ARRAY_DELIMITERS.get(style, ",")
+    return {original_name: delimiter.join(str(item) for item in value)}
+
+  return {original_name: value}
+
+
 HttpxClientFactory = Callable[[], httpx.AsyncClient]
 """Type alias for a zero-argument factory returning an ``httpx.AsyncClient``.
 
@@ -415,7 +470,14 @@ class RestApiTool(BaseTool):
         path_params[original_k] = quote(str(v), safe="")
       elif param_location == "query":
         if v is not None:
-          query_params[original_k] = v
+          query_params.update(
+              _serialize_query_param(
+                  original_k,
+                  v,
+                  style=param_obj.style,
+                  explode=param_obj.explode,
+              )
+          )
       elif param_location == "header":
         header_params[original_k] = v
       elif param_location == "cookie":

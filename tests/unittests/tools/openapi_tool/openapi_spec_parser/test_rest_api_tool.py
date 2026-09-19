@@ -1469,6 +1469,68 @@ class TestRestApiTool:
     assert request_params["json"] == {"param1": "value1", "param2": 123}
     assert request_params["params"] == {"testQueryParam": "query_value"}
 
+  def test_prepare_request_params_query_style_and_explode(
+      self, sample_endpoint, sample_auth_credential, sample_auth_scheme
+  ):
+    """Object/array query params are serialized per OpenAPI style/explode.
+
+    Regression test for https://github.com/google/adk-python/issues/7204:
+    without style/explode, an object-typed query parameter was sent as its
+    Python dict repr (e.g. "match={'status': 'open'}").
+    """
+    mock_operation = Operation(operationId="test_op")
+
+    tool = RestApiTool(
+        name="test_tool",
+        description="test",
+        endpoint=sample_endpoint,
+        operation=mock_operation,
+        auth_credential=sample_auth_credential,
+        auth_scheme=sample_auth_scheme,
+    )
+
+    params = [
+        # style: form (default), explode: true (default) -> spread by
+        # property name.
+        ApiParameter(
+            original_name="match",
+            py_name="match",
+            param_location="query",
+            param_schema=OpenAPISchema(type="object"),
+        ),
+        # style: deepObject, explode: true -> bracketed per property.
+        ApiParameter(
+            original_name="filter",
+            py_name="filter",
+            param_location="query",
+            param_schema=OpenAPISchema(type="object"),
+            style="deepObject",
+            explode=True,
+        ),
+        # style: form, explode: false -> comma-joined array.
+        ApiParameter(
+            original_name="fields",
+            py_name="fields",
+            param_location="query",
+            param_schema=OpenAPISchema(type="array"),
+            style="form",
+            explode=False,
+        ),
+    ]
+    kwargs = {
+        "match": {"status": "open", "priority": "P1"},
+        "filter": {"assignee": "me"},
+        "fields": ["id", "title"],
+    }
+
+    request_params = tool._prepare_request_params(params, kwargs)
+    assert request_params["params"] == {
+        "status": "open",
+        "priority": "P1",
+        "filter[assignee]": "me",
+        "fields": "id,title",
+    }
+
   def test_prepare_request_params_preserves_falsy_query_params(
       self, sample_endpoint, sample_auth_credential, sample_auth_scheme
   ):

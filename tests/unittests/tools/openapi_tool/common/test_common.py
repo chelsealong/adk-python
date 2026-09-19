@@ -147,6 +147,8 @@ class TestApiParameter:
         'param_schema': {'type': 'string', 'description': 'test description'},
         'description': 'test description',
         'py_name': 'test_param_custom',
+        'style': None,
+        'explode': None,
     }
 
   @pytest.mark.parametrize(
