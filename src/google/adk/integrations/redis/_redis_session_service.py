@@ -340,7 +340,7 @@ class RedisSessionService(BaseSessionService):
     """Appends an event to the session and synchronizes state in Redis."""
     client = self._get_redis()
     event = await super().append_event(session, event)
-    session.last_update_time = time.time()
+    session.last_update_time = event.timestamp
 
     # Sync app and user state deltas to their respective keys
     if event.actions and event.actions.state_delta:
