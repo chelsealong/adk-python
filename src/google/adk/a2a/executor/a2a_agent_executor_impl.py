@@ -97,6 +97,7 @@ class _A2aAgentExecutor(AgentExecutor):
     message, task_id, context_id = _require_request_context(context)
 
     runner = await self._resolve_runner()
+    executor_context: ExecutorContext | None = None
     try:
       run_request = self._config.request_converter(
           context,
@@ -153,24 +154,37 @@ class _A2aAgentExecutor(AgentExecutor):
           run_request,
       )
     except Exception as e:
-      logger.error('Error handling A2A request: %s', e, exc_info=True)
+      error_id = str(uuid.uuid4())
+      logger.error(
+          'Error handling A2A request [%s]: %s', error_id, e, exc_info=True
+      )
+      # The exception message may carry operator-facing detail (file paths,
+      # connection strings, credentials), so only a correlation id crosses
+      # the trust boundary to the peer; the full error stays in the logs.
+      failure_event = _compat.make_task_status_update_event(
+          task_id=task_id,
+          context_id=context_id,
+          status=_compat.make_task_status(
+              _compat.TS_FAILED,
+              message=Message(
+                  message_id=str(uuid.uuid4()),
+                  role=_compat.ROLE_AGENT,
+                  parts=[
+                      _compat.make_text_part(
+                          f'Agent execution failed. Error reference: {error_id}'
+                      )
+                  ],
+              ),
+          ),
+          final=True,
+      )
+      if executor_context is not None:
+        failure_event = await execute_after_agent_interceptors(
+            executor_context, failure_event, self._config.execute_interceptors
+        )
       # Publish failure event
       try:
-        await event_queue.enqueue_event(
-            _compat.make_task_status_update_event(
-                task_id=task_id,
-                context_id=context_id,
-                status=_compat.make_task_status(
-                    _compat.TS_FAILED,
-                    message=Message(
-                        message_id=str(uuid.uuid4()),
-                        role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
-                    ),
-                ),
-                final=True,
-            )
-        )
+        await event_queue.enqueue_event(failure_event)
       except Exception as enqueue_error:
         logger.error(
             'Failed to publish failure event: %s', enqueue_error, exc_info=True

@@ -149,27 +149,43 @@ class A2aAgentExecutor(AgentExecutor):
     await _compat.enqueue_submitted_signal(event_queue, context=context)
 
     # Handle the request and publish updates to the event queue
+    executor_context_holder: list[ExecutorContext] = []
     try:
-      await self._handle_request(context, event_queue)
+      await self._handle_request(context, event_queue, executor_context_holder)
     except Exception as e:
-      logger.error('Error handling A2A request: %s', e, exc_info=True)
+      error_id = platform_uuid.new_uuid()
+      logger.error(
+          'Error handling A2A request [%s]: %s', error_id, e, exc_info=True
+      )
+      # The exception message may carry operator-facing detail (file paths,
+      # connection strings, credentials), so only a correlation id crosses
+      # the trust boundary to the peer; the full error stays in the logs.
+      failure_event = _compat.make_task_status_update_event(
+          task_id=context.task_id,
+          context_id=context.context_id,
+          status=_compat.make_task_status(
+              _compat.TS_FAILED,
+              message=Message(
+                  message_id=platform_uuid.new_uuid(),
+                  role=_compat.ROLE_AGENT,
+                  parts=[
+                      _compat.make_text_part(
+                          f'Agent execution failed. Error reference: {error_id}'
+                      )
+                  ],
+              ),
+          ),
+          final=True,
+      )
+      if executor_context_holder:
+        failure_event = await execute_after_agent_interceptors(
+            executor_context_holder[0],
+            failure_event,
+            self._config.execute_interceptors,
+        )
       # Publish failure event
       try:
-        await event_queue.enqueue_event(
-            _compat.make_task_status_update_event(
-                task_id=context.task_id,
-                context_id=context.context_id,
-                status=_compat.make_task_status(
-                    _compat.TS_FAILED,
-                    message=Message(
-                        message_id=platform_uuid.new_uuid(),
-                        role=_compat.ROLE_AGENT,
-                        parts=[_compat.make_text_part(str(e))],
-                    ),
-                ),
-                final=True,
-            )
-        )
+        await event_queue.enqueue_event(failure_event)
       except Exception as enqueue_error:
         logger.error(
             'Failed to publish failure event: %s', enqueue_error, exc_info=True
@@ -179,6 +195,7 @@ class A2aAgentExecutor(AgentExecutor):
       self,
       context: RequestContext,
       event_queue: EventQueue,
+      executor_context_holder: list[ExecutorContext] | None = None,
   ) -> None:
     _, task_id, context_id = _require_request_context(context)
     # Resolve the runner instance
@@ -206,6 +223,8 @@ class A2aAgentExecutor(AgentExecutor):
         session_id=run_request.session_id,
         runner=runner,
     )
+    if executor_context_holder is not None:
+      executor_context_holder.append(executor_context)
 
     # publish the task working event
     await event_queue.enqueue_event(

@@ -499,11 +499,61 @@ class TestA2aAgentExecutor:
     failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
     assert failure_event.status.state == _compat.TS_FAILED
     _assert_final(failure_event)
+    # The raw exception text must not be forwarded to the peer.
     _failure_part = failure_event.status.message.parts[0]
     if _compat.IS_A2A_V1:
-      assert "Test error" in _failure_part.text
+      assert "Test error" not in _failure_part.text
     else:
-      assert "Test error" in _failure_part.root.text
+      assert "Test error" not in _failure_part.root.text
+
+  @pytest.mark.asyncio
+  async def test_execute_with_exception_routes_through_after_agent_interceptor(
+      self,
+  ):
+    """An exception raised mid-run is still redacted and passed through
+
+    ``after_agent``, matching the interceptor's documented contract for
+    terminal (including failed) events.
+    """
+    self.mock_context.task_id = "test-task-id"
+    self.mock_context.current_task = None
+
+    self.mock_request_converter.return_value = AgentRunRequest(
+        user_id="test-user",
+        session_id="test-session",
+        new_message=Mock(spec=Content),
+        run_config=RunConfig(),
+    )
+    mock_session = Mock()
+    mock_session.id = "test-session"
+    self.mock_runner.session_service.get_session = AsyncMock(
+        return_value=mock_session
+    )
+
+    async def mock_run_async(**kwargs):
+      raise Exception(
+          "connection failed: postgres://svc_agent:REDACTED@10.0.0.7/prod"
+      )
+      yield  # pragma: no cover - makes this an async generator
+
+    self.mock_runner.run_async = mock_run_async
+
+    after_agent_interceptor = AsyncMock(side_effect=lambda ctx, event: event)
+    self.mock_config.execute_interceptors = [
+        ExecuteInterceptor(after_agent=after_agent_interceptor)
+    ]
+
+    await self.executor.execute(self.mock_context, self.mock_event_queue)
+
+    after_agent_interceptor.assert_called_once()
+    failure_event = self.mock_event_queue.enqueue_event.call_args_list[-1][0][0]
+    assert failure_event.status.state == _compat.TS_FAILED
+    _failure_part = failure_event.status.message.parts[0]
+    failure_text = (
+        _failure_part.text if _compat.IS_A2A_V1 else _failure_part.root.text
+    )
+    assert "postgres://" not in failure_text
+    assert "REDACTED" not in failure_text
 
   @pytest.mark.asyncio
   async def test_handle_request_with_non_working_state(self):
