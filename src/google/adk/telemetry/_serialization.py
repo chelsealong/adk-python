@@ -22,12 +22,60 @@ from google.genai import types
 from opentelemetry.util.types import AnyValue
 from pydantic import BaseModel
 
+from ._credential_redaction import is_credential_arg_name
+from ._credential_redaction import is_credential_type
+
+# Bounds for the redaction walk below, matching the ones AutoTracingPlugin's
+# argument capture uses for the same reason: only containers consume node
+# budget, and hitting either bound elides the subtree rather than rendering
+# it, so a bound can never uncover a secret.
+_MAX_REDACT_DEPTH = 10
+_MAX_REDACT_NODES = 1024
+_REDACTED = "<redacted>"
+
+
+def _redact_credentials(obj: object, depth: int, budget: list[int]) -> object:
+  """Returns `obj` with credential-shaped values masked.
+
+  A value whose declared type is a credential type (`AuthCredential`,
+  `OAuth2Auth`, ...) is replaced by a type marker. A dict value whose key
+  conventionally holds a secret (`access_token`, `client_secret`, ...) is
+  replaced outright rather than descended into, since the key alone already
+  says a credential was there.
+  """
+  if isinstance(obj, BaseModel):
+    if is_credential_type(type(obj)):
+      return f"<{type(obj).__name__}>"
+    obj = obj.model_dump(mode="json")
+
+  if isinstance(obj, dict):
+    if depth >= _MAX_REDACT_DEPTH or budget[0] <= 0:
+      return _REDACTED
+    budget[0] -= 1
+    return {
+        key: (
+            _REDACTED
+            if isinstance(key, str) and is_credential_arg_name(key)
+            else _redact_credentials(value, depth + 1, budget)
+        )
+        for key, value in obj.items()
+    }
+  if isinstance(obj, (list, tuple)):
+    if depth >= _MAX_REDACT_DEPTH or budget[0] <= 0:
+      return _REDACTED
+    budget[0] -= 1
+    return [_redact_credentials(item, depth + 1, budget) for item in obj]
+  return obj
+
 
 def safe_json_serialize(obj: object) -> str:
   """Convert any Python object to a JSON-serializable type or string.
 
   Handles Pydantic `BaseModel` instances (common as tool return types) by
-  calling `model_dump(mode="json")` before JSON encoding.
+  calling `model_dump(mode="json")` before JSON encoding. Credential-shaped
+  values -- by declared type or by field name -- are masked first, so a
+  secret carried in a tool's arguments or response never reaches the
+  serialized string.
 
   Args:
     obj: The object to serialize.
@@ -39,11 +87,14 @@ def safe_json_serialize(obj: object) -> str:
 
   def _default(o: object) -> object:
     if isinstance(o, BaseModel):
+      if is_credential_type(type(o)):
+        return f"<{type(o).__name__}>"
       return o.model_dump(mode="json")
     return "<not serializable>"
 
   try:
-    return json.dumps(obj, ensure_ascii=False, default=_default)
+    redacted = _redact_credentials(obj, 0, [_MAX_REDACT_NODES])
+    return json.dumps(redacted, ensure_ascii=False, default=_default)
   except (TypeError, ValueError, OverflowError, RecursionError):
     return "<not serializable>"
 

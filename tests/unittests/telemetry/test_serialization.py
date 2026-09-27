@@ -16,6 +16,12 @@
 
 from __future__ import annotations
 
+import json
+
+from google.adk.auth.auth_credential import AuthCredential
+from google.adk.auth.auth_credential import AuthCredentialTypes
+from google.adk.auth.auth_credential import OAuth2Auth
+from google.adk.telemetry._serialization import safe_json_serialize
 from google.adk.telemetry._serialization import serialize_content
 from google.genai import types
 
@@ -84,3 +90,45 @@ def test_serialize_content_unserializable_value_yields_the_sentinel():
   raising out of the telemetry path.
   """
   assert serialize_content(object()) == '"<not serializable>"'
+
+
+def test_safe_json_serialize_masks_credential_field_by_name():
+  """A dict whose key conventionally holds a secret is masked outright,
+
+  even though the dict is already plain JSON (no pydantic type info left) --
+  this is the shape `AuthCredential.model_dump(mode="json")` produces.
+  """
+  result = json.loads(
+      safe_json_serialize({'client_id': 'cid', 'access_token': 'ya29.SECRET'})
+  )
+
+  assert result['client_id'] == 'cid'
+  assert 'SECRET' not in json.dumps(result)
+
+
+def test_safe_json_serialize_masks_nested_credential_type():
+  """A live `AuthCredential` nested under a field name that does not itself
+
+  look like a secret is still masked, by its declared type.
+  """
+  cred = AuthCredential(
+      auth_type=AuthCredentialTypes.OAUTH2,
+      oauth2=OAuth2Auth(
+          client_id='cid',
+          client_secret='LEAKED-SECRET',
+          access_token='LEAKED-TOKEN',
+      ),
+  )
+
+  result = safe_json_serialize({'value': cred})
+
+  assert 'LEAKED-SECRET' not in result
+  assert 'LEAKED-TOKEN' not in result
+  assert 'AuthCredential' in result
+
+
+def test_safe_json_serialize_leaves_ordinary_dicts_untouched():
+  """A dict with no credential-shaped keys is serialized as-is."""
+  result = json.loads(safe_json_serialize({'a': 1, 'b': [1, 2, 3]}))
+
+  assert result == {'a': 1, 'b': [1, 2, 3]}
