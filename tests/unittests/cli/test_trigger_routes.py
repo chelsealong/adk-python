@@ -760,7 +760,41 @@ class TestTriggerPubSub:
     assert len(captured_messages) == 1
     parsed_msg = json.loads(captured_messages[0])
     assert parsed_msg["data"] == "Hello from Pub/Sub"
-    assert parsed_msg["attributes"] == {}
+    assert parsed_msg["attributes"] == {"messageId": "msg-001"}
+
+  def test_redelivery_carries_same_message_id_for_deduplication(
+      self, client, monkeypatch
+  ):
+    """A redelivery keeps the same messageId, so a tool can dedupe on it."""
+    captured_messages = []
+
+    async def dummy_run_async_capture(
+        self, user_id, session_id, new_message, **kwargs
+    ):
+      captured_messages.append(new_message.parts[0].text)
+      yield _model_event("Success")
+      await asyncio.sleep(0)
+
+    monkeypatch.setattr(Runner, "run_async", dummy_run_async_capture)
+
+    message_data = base64.b64encode(b"pay invoice #42").decode("utf-8")
+    payload = {
+        "message": {
+            "data": message_data,
+            "messageId": "redelivered-msg-id",
+        },
+        "subscription": "projects/my-project/subscriptions/my-sub",
+    }
+
+    # First delivery, then a redelivery of the exact same message.
+    client.post("/apps/test_app/trigger/pubsub", json=payload)
+    client.post("/apps/test_app/trigger/pubsub", json=payload)
+
+    assert len(captured_messages) == 2
+    first = json.loads(captured_messages[0])
+    second = json.loads(captured_messages[1])
+    assert first["attributes"]["messageId"] == "redelivered-msg-id"
+    assert second["attributes"]["messageId"] == "redelivered-msg-id"
 
   def test_message_with_attributes(self, client, monkeypatch):
     """Pub/Sub message with attributes (no data) is processed."""
@@ -789,7 +823,11 @@ class TestTriggerPubSub:
     assert len(captured_messages) == 1
     parsed_msg = json.loads(captured_messages[0])
     assert parsed_msg["data"] is None
-    assert parsed_msg["attributes"] == {"key": "value", "action": "process"}
+    assert parsed_msg["attributes"] == {
+        "key": "value",
+        "action": "process",
+        "messageId": "msg-002",
+    }
 
   def test_json_payload_in_data(self, client, monkeypatch):
     """JSON-encoded data in Pub/Sub message is decoded properly."""
@@ -820,7 +858,7 @@ class TestTriggerPubSub:
     assert len(captured_messages) == 1
     parsed_msg = json.loads(captured_messages[0])
     assert parsed_msg["data"] == {"order_id": 42, "amount": 99.99}
-    assert parsed_msg["attributes"] == {}
+    assert parsed_msg["attributes"] == {"messageId": "msg-003"}
 
   def test_invalid_base64_returns_400(self, client):
     """Invalid base64 data returns 400."""
@@ -1642,7 +1680,7 @@ class TestTriggerRequestModels:
     assert len(captured_messages) == 1
     assert json.loads(captured_messages[0]) == {
         "data": "envelope test",
-        "attributes": {"k": "v"},
+        "attributes": {"k": "v", "messageId": "msg-100"},
     }
 
   def test_eventarc_fallback_forwards_only_the_fields_the_caller_set(

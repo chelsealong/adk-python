@@ -511,8 +511,14 @@ class TriggerRouter:
                 detail=f"Invalid base64 message data: {e}",
             ) from e
 
+        attributes = dict(req.message.attributes or {})
+        if req.message.messageId:
+          # Pub/Sub keeps the same messageId across redeliveries of the same
+          # message, so exposing it lets a tool derive an idempotency key and
+          # skip a side effect it already performed.
+          attributes["messageId"] = req.message.messageId
         message_text = json.dumps(
-            {"data": data_payload, "attributes": req.message.attributes or {}}
+            {"data": data_payload, "attributes": attributes}
         )
 
         logger.info(
