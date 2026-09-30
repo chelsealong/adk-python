@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+import contextlib
 import copy
 import datetime
 import json
@@ -179,6 +180,7 @@ class VertexAiSessionService(BaseSessionService):
     self._express_mode_api_key = get_express_mode_api_key(
         project, location, express_mode_api_key
     )
+    self._api_client: Optional[vertexai.AsyncClient] = None
 
   @override
   async def create_session(
@@ -567,24 +569,32 @@ class VertexAiSessionService(BaseSessionService):
   ) -> Optional[Union[types.HttpOptions, types.HttpOptionsDict]]:
     return None
 
-  def _get_api_client(self) -> vertexai.AsyncClient:
+  def _get_api_client(
+      self,
+  ) -> contextlib.AbstractAsyncContextManager[vertexai.AsyncClient]:
     """Instantiates an API client for the given project and location.
 
     Returns:
-      An API client for the given project and location or express mode api key.
+      An async context manager yielding the API client for the given project and
+      location or express mode api key. The client is created once and reused,
+      as each new client allocates SSL contexts that are not released, so
+      leaving the context does not close it.
     """
     import vertexai
 
-    if self._express_mode_api_key:
-      return vertexai.Client(
-          http_options=self._api_client_http_options_override(),
-          api_key=self._express_mode_api_key,
-      ).aio
-    return vertexai.Client(
-        project=self._project,
-        location=self._location,
-        http_options=self._api_client_http_options_override(),
-    ).aio
+    if self._api_client is None:
+      if self._express_mode_api_key:
+        self._api_client = vertexai.Client(
+            http_options=self._api_client_http_options_override(),
+            api_key=self._express_mode_api_key,
+        ).aio
+      else:
+        self._api_client = vertexai.Client(
+            project=self._project,
+            location=self._location,
+            http_options=self._api_client_http_options_override(),
+        ).aio
+    return contextlib.nullcontext(self._api_client)
 
 
 def _get_raw_event(api_event_obj: object) -> dict[str, Any] | None:

@@ -1804,3 +1804,39 @@ async def test_append_event_does_not_retry_on_non_429_client_error(
         == 1
     )
     mock_sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_api_client_is_created_once_and_not_closed():
+  """One vertexai.Client is reused across calls and left open."""
+  mock_aio = mock.MagicMock()
+  mock_aio.__aenter__ = mock.AsyncMock(return_value=mock_aio)
+  mock_aio.__aexit__ = mock.AsyncMock(return_value=None)
+  mock_aio.agent_engines.sessions.get = mock.AsyncMock(
+      return_value=mock.MagicMock(
+          name='sessions/1',
+          user_id='u1',
+          update_time=isoparse('2024-12-12T12:12:12.123456Z'),
+          session_state={},
+      )
+  )
+  mock_aio.agent_engines.sessions.get.return_value.name = (
+      'projects/p/locations/l/reasoningEngines/123/sessions/1'
+  )
+
+  async def _no_events(**kwargs):
+    return
+    yield
+
+  mock_aio.agent_engines.sessions.events.list = mock.AsyncMock(
+      side_effect=lambda **kw: _no_events()
+  )
+  service = VertexAiSessionService(project='p', location='l')
+
+  with mock.patch('vertexai.Client') as client_cls:
+    client_cls.return_value.aio = mock_aio
+    for _ in range(3):
+      await service.get_session(app_name='123', user_id='u1', session_id='1')
+
+  assert client_cls.call_count == 1
+  mock_aio.__aexit__.assert_not_called()
