@@ -1,0 +1,85 @@
+{
+  "actual_cached_tokens": null,
+  "adk_commit": "6854b88272f84a6ca9b1e4dec979a6476a00e0d7",
+  "adk_version": "2.11.0",
+  "agent_tool": {
+    "child_cache_config_present": false,
+    "child_cache_metadata_present": false,
+    "child_contents": 1,
+    "child_roles": [
+      "user"
+    ],
+    "different_prefix_fields": [
+      "system_instruction"
+    ],
+    "equal_leading_contents": 0,
+    "parent_contents": 3,
+    "parent_roles": [
+      "user",
+      "model",
+      "user"
+    ],
+    "shared_context_present": false
+  },
+  "cached_prefix_contents_count": 2,
+  "checkout_head": "6854b88272f84a6ca9b1e4dec979a6476a00e0d7",
+  "evidence_type": "offline real ADK assembly; simulated model boundary",
+  "google_genai_version": "2.22.0",
+  "limitations": [
+    "No provider requests, tokenization, timing, cost or quality benchmark.",
+    "No blanket claim about all ADK providers, modes or handoff paths.",
+    "Snapshot control is not an implemented safe agent fork.",
+    "History fencing/role changes must not be removed to improve caching."
+  ],
+  "metadata_lookup": {
+    "child_found_parent_metadata": false,
+    "parent_found": true
+  },
+  "ordinary_child_with_parent_metadata_locally_valid": false,
+  "provider_cost": null,
+  "provider_latency_seconds": null,
+  "pydantic_version": "2.12.5",
+  "python_version": "3.11.13",
+  "request_snapshot_control_locally_valid": true,
+  "requests_sha256": "be676794a3c8d04c89c6b41f02161677b19113d96985680b8963939d76945e07",
+  "sequential_agents": {
+    "child_cache_config_present": true,
+    "child_cache_metadata_present": false,
+    "child_contents": 4,
+    "child_roles": [
+      "user",
+      "user",
+      "user",
+      "user"
+    ],
+    "different_prefix_fields": [
+      "system_instruction"
+    ],
+    "equal_leading_contents": 1,
+    "parent_contents": 3,
+    "parent_roles": [
+      "user",
+      "model",
+      "user"
+    ],
+    "shared_context_present": true
+  },
+  "shared_context_characters": 102889,
+  "synthetic_cache_fixture": true,
+  "task_quality_measured": false,
+  "workflow_default_single_turn": {
+    "child_cache_config_present": true,
+    "child_cache_metadata_present": false,
+    "child_contents": 1,
+    "child_roles": [
+      "user"
+    ],
+    "different_prefix_fields": [],
+    "equal_leading_contents": 0,
+    "parent_contents": 1,
+    "parent_roles": [
+      "user"
+    ],
+    "shared_context_present": false
+  }
+}

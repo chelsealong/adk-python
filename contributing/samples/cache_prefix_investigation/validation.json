@@ -1,0 +1,11 @@
+{
+  "result": "pass",
+  "checks": 130,
+  "new_reproduction_checks": 9,
+  "existing_upstream_checks": 121,
+  "full_supported_python_matrix_run": false,
+  "live_provider_benchmark_run": false,
+  "command": "PYTHONPATH=src .venv/bin/python -m pytest contributing/samples/cache_prefix_investigation/test_reproduce.py tests/unittests/flows/llm_flows/context/test_cache.py tests/unittests/agents/test_gemini_context_cache_manager.py tests/unittests/flows/llm_flows/prompt/test_identity.py tests/unittests/tools/test_agent_tool.py -q",
+  "python": "3.11.13",
+  "scope": "Offline research artifact; no ADK runtime modifications"
+}
